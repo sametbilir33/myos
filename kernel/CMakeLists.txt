@@ -1,0 +1,127 @@
+find_program(XORRISO_EXECUTABLE xorriso REQUIRED)
+
+set(LIMINE_DIR "${CMAKE_SOURCE_DIR}/boot/limine")
+set(LIMINE_CONFIG "${CMAKE_SOURCE_DIR}/boot/limine.conf")
+set(LIMINE_INSTALLER
+    "${LIMINE_DIR}/limine-tool-windows-x86/limine.exe"
+)
+
+if(NOT EXISTS "${LIMINE_INSTALLER}")
+    message(FATAL_ERROR "Limine Windows installer not found: ${LIMINE_INSTALLER}")
+endif()
+
+add_library(kernel_core OBJECT
+    core/main.c
+)
+
+target_include_directories(kernel_core PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+target_compile_options(kernel_core PRIVATE
+    -ffreestanding
+    -fno-stack-protector
+    -mno-red-zone
+    -fno-pic
+    -fno-pie
+    -fno-asynchronous-unwind-tables
+    -Wall
+    -Wextra
+)
+
+set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel.elf")
+
+add_custom_command(
+    OUTPUT "${KERNEL_ELF}"
+    COMMAND ld.lld
+        -flavor gnu
+        -m elf_x86_64
+        -T "${CMAKE_CURRENT_SOURCE_DIR}/linker.ld"
+        --build-id=none
+        -o "${KERNEL_ELF}"
+        $<TARGET_OBJECTS:kernel_core>
+    DEPENDS
+        kernel_core
+        "${CMAKE_CURRENT_SOURCE_DIR}/linker.ld"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
+
+add_custom_target(kernel ALL DEPENDS "${KERNEL_ELF}")
+
+set(ISO_ROOT "${CMAKE_BINARY_DIR}/iso_root")
+set(ISO_FILE "${CMAKE_BINARY_DIR}/myos.iso")
+
+find_program(CYGPATH_EXECUTABLE cygpath REQUIRED)
+
+execute_process(
+    COMMAND "${CYGPATH_EXECUTABLE}" -u "${ISO_ROOT}"
+    OUTPUT_VARIABLE ISO_ROOT_POSIX
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    COMMAND_ERROR_IS_FATAL ANY
+)
+
+execute_process(
+    COMMAND "${CYGPATH_EXECUTABLE}" -u "${ISO_FILE}"
+    OUTPUT_VARIABLE ISO_FILE_POSIX
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    COMMAND_ERROR_IS_FATAL ANY
+)
+
+add_custom_command(
+    OUTPUT "${ISO_FILE}"
+
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${ISO_ROOT}"
+
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${ISO_ROOT}/boot/limine"
+        "${ISO_ROOT}/EFI/BOOT"
+
+    COMMAND "${CMAKE_COMMAND}" -E copy
+        "${KERNEL_ELF}"
+        "${ISO_ROOT}/boot/kernel.elf"
+
+    COMMAND "${CMAKE_COMMAND}" -E copy
+        "${LIMINE_CONFIG}"
+        "${ISO_ROOT}/boot/limine/limine.conf"
+
+    COMMAND "${CMAKE_COMMAND}" -E copy
+        "${LIMINE_DIR}/limine-bios.sys"
+        "${LIMINE_DIR}/limine-bios-cd.bin"
+        "${LIMINE_DIR}/limine-uefi-cd.bin"
+        "${ISO_ROOT}/boot/limine"
+
+    COMMAND "${CMAKE_COMMAND}" -E copy
+        "${LIMINE_DIR}/BOOTX64.EFI"
+        "${ISO_ROOT}/EFI/BOOT/BOOTX64.EFI"
+
+    COMMAND "${XORRISO_EXECUTABLE}"
+    -as mkisofs
+    -R -r -J
+    -b boot/limine/limine-bios-cd.bin
+    -no-emul-boot
+    -boot-load-size 4
+    -boot-info-table
+    -hfsplus
+    -apm-block-size 2048
+    --efi-boot boot/limine/limine-uefi-cd.bin
+    -efi-boot-part
+    --efi-boot-image
+    --protective-msdos-label
+    "${ISO_ROOT_POSIX}"
+    -o "${ISO_FILE_POSIX}"
+
+    COMMAND "${LIMINE_INSTALLER}" bios-install "${ISO_FILE}"
+
+    DEPENDS
+        kernel
+        "${LIMINE_CONFIG}"
+        "${LIMINE_DIR}/BOOTX64.EFI"
+        "${LIMINE_DIR}/limine-bios.sys"
+        "${LIMINE_DIR}/limine-bios-cd.bin"
+        "${LIMINE_DIR}/limine-uefi-cd.bin"
+
+    VERBATIM
+)
+
+add_custom_target(iso ALL DEPENDS "${ISO_FILE}")
