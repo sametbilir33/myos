@@ -473,6 +473,26 @@ static void finish_drag(void)
     redraw_region(drag_preview_x, drag_preview_y, WINDOW_W, WINDOW_H);
 }
 
+static void handle_gui_event(const struct gui_event *event)
+{
+    switch (event->type) {
+    case GUI_EVENT_MOUSE_MOVE:
+        if (dragging)
+            update_drag(event->x, event->y);
+        break;
+
+    case GUI_EVENT_MOUSE_BUTTON_DOWN:
+        if (event->button == 1 && !dragging)
+            handle_click(event->x, event->y);
+        break;
+
+    case GUI_EVENT_MOUSE_BUTTON_UP:
+        if (event->button == 1 && dragging)
+            finish_drag();
+        break;
+    }
+}
+
 static void update_clock(void)
 {
     char new_time[9];
@@ -539,6 +559,7 @@ void kernel_main(void)
         serial_write("[WARN] PS/2 mouse unavailable\n");
 
     gui_events_init();
+    gui_events_set_handler(handle_gui_event);
     uint8_t previous_buttons = 0;
     uint32_t clock_counter = 0;
 
@@ -609,26 +630,7 @@ void kernel_main(void)
                 });
             }
 
-            struct gui_event event;
-
-            while (gui_event_poll(&event)) {
-                switch (event.type) {
-                case GUI_EVENT_MOUSE_MOVE:
-                    if (dragging)
-                        update_drag(event.x, event.y);
-                    break;
-
-                case GUI_EVENT_MOUSE_BUTTON_DOWN:
-                    if (event.button == 1 && !dragging)
-                        handle_click(event.x, event.y);
-                    break;
-
-                case GUI_EVENT_MOUSE_BUTTON_UP:
-                    if (event.button == 1 && dragging)
-                        finish_drag();
-                    break;
-                }
-            }
+            gui_events_dispatch();
 
             cursor_draw_at(cursor_x, cursor_y);
         }

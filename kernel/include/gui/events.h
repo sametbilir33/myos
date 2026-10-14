@@ -16,7 +16,11 @@ struct gui_event {
     int button;
 };
 
+typedef void (*gui_event_handler)(const struct gui_event *event);
+
 void gui_events_init(void);
+void gui_events_set_handler(gui_event_handler handler);
+void gui_events_dispatch(void);
 bool gui_event_push(struct gui_event event);
 bool gui_event_poll(struct gui_event *event);
 

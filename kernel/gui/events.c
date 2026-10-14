@@ -37,3 +37,20 @@ bool gui_event_poll(struct gui_event *event)
 
     return true;
 }
+
+static gui_event_handler active_handler;
+
+void gui_events_set_handler(gui_event_handler handler)
+{
+    active_handler = handler;
+}
+
+void gui_events_dispatch(void)
+{
+    struct gui_event event;
+
+    while (gui_event_poll(&event)) {
+        if (active_handler != 0)
+            active_handler(&event);
+    }
+}
