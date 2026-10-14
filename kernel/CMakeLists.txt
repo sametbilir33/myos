@@ -1,3 +1,4 @@
+
 find_program(XORRISO_EXECUTABLE xorriso REQUIRED)
 
 set(LIMINE_DIR "${CMAKE_SOURCE_DIR}/boot/limine")
@@ -10,12 +11,13 @@ if(NOT EXISTS "${LIMINE_INSTALLER}")
     message(FATAL_ERROR "Limine Windows installer not found: ${LIMINE_INSTALLER}")
 endif()
 
-add_library(kernel_core OBJECT
-    core/main.c
-    graphics/framebuffer.c
-    input/ps2_mouse.c
-    drivers/serial.c
+# Automatically discover all kernel C source files.
+file(GLOB_RECURSE KERNEL_SOURCES
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
 )
+
+add_library(kernel_core OBJECT ${KERNEL_SOURCES})
 
 target_include_directories(kernel_core PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -31,7 +33,6 @@ target_compile_options(kernel_core PRIVATE
     -Wall
     -Wextra
     -mcmodel=kernel
-    -fno-pie
 )
 
 set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel.elf")
@@ -101,20 +102,20 @@ add_custom_command(
         "${ISO_ROOT}/EFI/BOOT/BOOTX64.EFI"
 
     COMMAND "${XORRISO_EXECUTABLE}"
-    -as mkisofs
-    -R -r -J
-    -b boot/limine/limine-bios-cd.bin
-    -no-emul-boot
-    -boot-load-size 4
-    -boot-info-table
-    -hfsplus
-    -apm-block-size 2048
-    --efi-boot boot/limine/limine-uefi-cd.bin
-    -efi-boot-part
-    --efi-boot-image
-    --protective-msdos-label
-    "${ISO_ROOT_POSIX}"
-    -o "${ISO_FILE_POSIX}"
+        -as mkisofs
+        -R -r -J
+        -b boot/limine/limine-bios-cd.bin
+        -no-emul-boot
+        -boot-load-size 4
+        -boot-info-table
+        -hfsplus
+        -apm-block-size 2048
+        --efi-boot boot/limine/limine-uefi-cd.bin
+        -efi-boot-part
+        --efi-boot-image
+        --protective-msdos-label
+        "${ISO_ROOT_POSIX}"
+        -o "${ISO_FILE_POSIX}"
 
     COMMAND "${LIMINE_INSTALLER}" bios-install "${ISO_FILE}"
 
