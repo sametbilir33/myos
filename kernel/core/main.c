@@ -31,6 +31,7 @@ static volatile uint64_t limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARK
 #define WINDOW_H 240
 #define MAX_WINDOWS 8
 #define CLOCK_POLL_INTERVAL 100000u
+#define MAX_MOUSE_PACKETS_PER_LOOP 32
 
 static const uint32_t COLOR_BACKGROUND = 0x00213B60;
 static const uint32_t COLOR_BAR = 0x00132642;
@@ -63,6 +64,10 @@ static int drag_start_x, drag_start_y;
 static int drag_original_x, drag_original_y;
 static int drag_preview_x, drag_preview_y;
 
+/* Şu an aktif olan clip bölgesi (kendi tarafımızda tutuyoruz ki
+   bölge dışında kalan çizimleri hiç göndermeyelim). */
+static bool clip_active;
+static int clip_x, clip_y, clip_w, clip_h;
 
 static inline void outb(uint16_t port, uint8_t value)
 {
@@ -147,6 +152,59 @@ static bool inside(int px, int py, int x, int y, int w, int h)
     return px >= x && px < x + w && py >= y && py < y + h;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Clip'e duyarlı çizim sarmalayıcıları                               */
+/* ------------------------------------------------------------------ */
+
+static void fill_rect(int x, int y, int w, int h, uint32_t color)
+{
+    if (w <= 0 || h <= 0)
+        return;
+
+    if (clip_active) {
+        int x2 = x + w;
+        int y2 = y + h;
+        int cx2 = clip_x + clip_w;
+        int cy2 = clip_y + clip_h;
+
+        if (x < clip_x) x = clip_x;
+        if (y < clip_y) y = clip_y;
+        if (x2 > cx2) x2 = cx2;
+        if (y2 > cy2) y2 = cy2;
+
+        if (x2 <= x || y2 <= y)
+            return; /* tamamen bölge dışında, hiç çizme */
+
+        w = x2 - x;
+        h = y2 - y;
+    }
+
+    framebuffer_draw_rect(x, y, w, h, color);
+}
+
+static int text_length(const char *s)
+{
+    int n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static void draw_text(int x, int y, const char *text, uint32_t color, int scale)
+{
+    if (clip_active) {
+        /* Muhafazakar sınırlayıcı kutu: font boyutu tam bilinmediği için
+           biraz bol tutuyoruz. Sadece tamamen dışarıda kalanı atlıyoruz. */
+        int w = text_length(text) * 10 * scale;
+        int h = 16 * scale;
+
+        if (x + w <= clip_x || x >= clip_x + clip_w ||
+            y + h <= clip_y || y >= clip_y + clip_h)
+            return;
+    }
+
+    framebuffer_draw_text(x, y, text, color, scale);
+}
+
 static const char *app_title(int app)
 {
     switch (app) {
@@ -160,45 +218,45 @@ static const char *app_title(int app)
 
 static void draw_status_bar(void)
 {
-    framebuffer_draw_rect(0, 0, (int)framebuffer_width(), SCREEN_BAR_HEIGHT, COLOR_BAR);
-    framebuffer_draw_rect(0, SCREEN_BAR_HEIGHT - 1, (int)framebuffer_width(), 1, COLOR_ACCENT);
-    framebuffer_draw_rect(8, 5, 92, 27, menu_open ? COLOR_HOVER : COLOR_PANEL);
-    framebuffer_draw_rect(8, 5, 3, 27, COLOR_ACCENT);
-    framebuffer_draw_text(19, 11, "MyOS", COLOR_TEXT, 1);
-    framebuffer_draw_text(57, 11, "[v]", COLOR_MUTED, 1);
+    fill_rect(0, 0, (int)framebuffer_width(), SCREEN_BAR_HEIGHT, COLOR_BAR);
+    fill_rect(0, SCREEN_BAR_HEIGHT - 1, (int)framebuffer_width(), 1, COLOR_ACCENT);
+    fill_rect(8, 5, 92, 27, menu_open ? COLOR_HOVER : COLOR_PANEL);
+    fill_rect(8, 5, 3, 27, COLOR_ACCENT);
+    draw_text(19, 11, "MyOS", COLOR_TEXT, 1);
+    draw_text(57, 11, "[v]", COLOR_MUTED, 1);
 
     int clock_x = (int)framebuffer_width() - 80;
-    framebuffer_draw_rect(clock_x, 0, 80, SCREEN_BAR_HEIGHT, COLOR_BAR);
-    framebuffer_draw_text(clock_x + 8, 12, clock_text, COLOR_TEXT, 1);
+    fill_rect(clock_x, 0, 80, SCREEN_BAR_HEIGHT, COLOR_BAR);
+    draw_text(clock_x + 8, 12, clock_text, COLOR_TEXT, 1);
 }
 
 static void draw_desktop_background(void)
 {
-    framebuffer_draw_rect(0, 0, (int)framebuffer_width(), (int)framebuffer_height(), COLOR_BACKGROUND);
-    framebuffer_draw_rect(40, 100, 180, 2, RGB(53, 100, 148));
-    framebuffer_draw_text(40, 112, "Welcome to MyOS", COLOR_TEXT, 2);
-    framebuffer_draw_text(40, 150, "A small desktop operating system", COLOR_MUTED, 1);
+    fill_rect(0, 0, (int)framebuffer_width(), (int)framebuffer_height(), COLOR_BACKGROUND);
+    fill_rect(40, 100, 180, 2, RGB(53, 100, 148));
+    draw_text(40, 112, "Welcome to MyOS", COLOR_TEXT, 2);
+    draw_text(40, 150, "A small desktop operating system", COLOR_MUTED, 1);
 }
 
 static void draw_menu_item(int y, const char *label)
 {
-    framebuffer_draw_text(MENU_X + 14, y + 5, label, COLOR_TEXT, 1);
+    draw_text(MENU_X + 14, y + 5, label, COLOR_TEXT, 1);
 }
 
 static void draw_menu(void)
 {
-    framebuffer_draw_rect(MENU_X, MENU_Y, MENU_W, MENU_H, COLOR_PANEL);
-    framebuffer_draw_rect(MENU_X, MENU_Y, MENU_W, 1, COLOR_BORDER);
-    framebuffer_draw_rect(MENU_X, MENU_Y + MENU_H - 1, MENU_W, 1, COLOR_BORDER);
-    framebuffer_draw_rect(MENU_X, MENU_Y, 1, MENU_H, COLOR_BORDER);
-    framebuffer_draw_rect(MENU_X + MENU_W - 1, MENU_Y, 1, MENU_H, COLOR_BORDER);
+    fill_rect(MENU_X, MENU_Y, MENU_W, MENU_H, COLOR_PANEL);
+    fill_rect(MENU_X, MENU_Y, MENU_W, 1, COLOR_BORDER);
+    fill_rect(MENU_X, MENU_Y + MENU_H - 1, MENU_W, 1, COLOR_BORDER);
+    fill_rect(MENU_X, MENU_Y, 1, MENU_H, COLOR_BORDER);
+    fill_rect(MENU_X + MENU_W - 1, MENU_Y, 1, MENU_H, COLOR_BORDER);
 
     draw_menu_item(47, "About");
     draw_menu_item(70, "Notepad");
     draw_menu_item(93, "File Manager");
     draw_menu_item(116, "Terminal");
 
-    framebuffer_draw_rect(MENU_X + 10, 141, MENU_W - 20, 1, COLOR_BORDER);
+    fill_rect(MENU_X + 10, 141, MENU_W - 20, 1, COLOR_BORDER);
     draw_menu_item(148, "Shutdown");
     draw_menu_item(171, "Reboot");
 }
@@ -207,36 +265,43 @@ static void draw_window(const struct app_window *win)
 {
     int x = win->x, y = win->y, w = WINDOW_W, h = WINDOW_H;
 
-    framebuffer_draw_rect(x, y, w, h, COLOR_PANEL_DARK);
-    framebuffer_draw_rect(x, y, w, 30, COLOR_BAR);
-    framebuffer_draw_rect(x, y, w, 2, COLOR_ACCENT);
-    framebuffer_draw_rect(x, y + h - 1, w, 1, COLOR_BORDER);
-    framebuffer_draw_rect(x, y, 1, h, COLOR_BORDER);
-    framebuffer_draw_rect(x + w - 1, y, 1, h, COLOR_BORDER);
-    framebuffer_draw_text(x + 12, y + 9, app_title(win->app), COLOR_TEXT, 1);
-    framebuffer_draw_rect(x + w - 28, y + 4, 22, 22, RGB(130, 45, 55));
-    framebuffer_draw_text(x + w - 21, y + 11, "X", COLOR_TEXT, 1);
+    /* Pencere bölgeyle hiç kesişmiyorsa tüm çizimi atla. */
+    if (clip_active) {
+        if (x + w <= clip_x || x >= clip_x + clip_w ||
+            y + h <= clip_y || y >= clip_y + clip_h)
+            return;
+    }
+
+    fill_rect(x, y, w, h, COLOR_PANEL_DARK);
+    fill_rect(x, y, w, 30, COLOR_BAR);
+    fill_rect(x, y, w, 2, COLOR_ACCENT);
+    fill_rect(x, y + h - 1, w, 1, COLOR_BORDER);
+    fill_rect(x, y, 1, h, COLOR_BORDER);
+    fill_rect(x + w - 1, y, 1, h, COLOR_BORDER);
+    draw_text(x + 12, y + 9, app_title(win->app), COLOR_TEXT, 1);
+    fill_rect(x + w - 28, y + 4, 22, 22, RGB(130, 45, 55));
+    draw_text(x + w - 21, y + 11, "X", COLOR_TEXT, 1);
 
     switch (win->app) {
     case 1:
-        framebuffer_draw_text(x + 18, y + 55, "MyOS", COLOR_ACCENT, 2);
-        framebuffer_draw_text(x + 18, y + 92, "64-bit experimental desktop", COLOR_TEXT, 1);
-        framebuffer_draw_text(x + 18, y + 116, "Built from scratch in C.", COLOR_MUTED, 1);
-        framebuffer_draw_text(x + 18, y + 174, "Version 0.1", COLOR_MUTED, 1);
+        draw_text(x + 18, y + 55, "MyOS", COLOR_ACCENT, 2);
+        draw_text(x + 18, y + 92, "64-bit experimental desktop", COLOR_TEXT, 1);
+        draw_text(x + 18, y + 116, "Built from scratch in C.", COLOR_MUTED, 1);
+        draw_text(x + 18, y + 174, "Version 0.1", COLOR_MUTED, 1);
         break;
     case 2:
-        framebuffer_draw_text(x + 18, y + 48, "Notepad is not implemented yet.", COLOR_MUTED, 1);
-        framebuffer_draw_text(x + 18, y + 72, "Text editing will come later.", COLOR_MUTED, 1);
+        draw_text(x + 18, y + 48, "Notepad is not implemented yet.", COLOR_MUTED, 1);
+        draw_text(x + 18, y + 72, "Text editing will come later.", COLOR_MUTED, 1);
         break;
     case 3:
-        framebuffer_draw_text(x + 18, y + 48, "File Manager", COLOR_TEXT, 1);
-        framebuffer_draw_text(x + 18, y + 72, "Filesystem support is not ready.", COLOR_MUTED, 1);
+        draw_text(x + 18, y + 48, "File Manager", COLOR_TEXT, 1);
+        draw_text(x + 18, y + 72, "Filesystem support is not ready.", COLOR_MUTED, 1);
         break;
     case 4:
-        framebuffer_draw_rect(x + 12, y + 43, w - 24, h - 55, RGB(5, 12, 20));
-        framebuffer_draw_text(x + 22, y + 54, "MyOS terminal", COLOR_ACCENT, 1);
-        framebuffer_draw_text(x + 22, y + 78, "Shell not implemented.", COLOR_TEXT, 1);
-        framebuffer_draw_text(x + 22, y + 102, "> _", COLOR_TEXT, 1);
+        fill_rect(x + 12, y + 43, w - 24, h - 55, RGB(5, 12, 20));
+        draw_text(x + 22, y + 54, "MyOS terminal", COLOR_ACCENT, 1);
+        draw_text(x + 22, y + 78, "Shell not implemented.", COLOR_TEXT, 1);
+        draw_text(x + 22, y + 102, "> _", COLOR_TEXT, 1);
         break;
     }
 }
@@ -244,6 +309,29 @@ static void draw_window(const struct app_window *win)
 /* Yalnızca belirtilen dikdörtgeni yeniden oluştur. */
 static void redraw_region(int x, int y, int width, int height)
 {
+    /* Ekranla kesiştir. */
+    int sw = (int)framebuffer_width();
+    int sh = (int)framebuffer_height();
+    int x2 = x + width;
+    int y2 = y + height;
+
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x2 > sw) x2 = sw;
+    if (y2 > sh) y2 = sh;
+
+    if (x2 <= x || y2 <= y)
+        return;
+
+    width = x2 - x;
+    height = y2 - y;
+
+    clip_active = true;
+    clip_x = x;
+    clip_y = y;
+    clip_w = width;
+    clip_h = height;
+
     framebuffer_reset_clip();
     framebuffer_set_clip(x, y, width, height);
 
@@ -257,15 +345,16 @@ static void redraw_region(int x, int y, int width, int height)
         draw_menu();
 
     framebuffer_reset_clip();
+    clip_active = false;
 }
 
 static void draw_drag_outline(int x, int y)
 {
     uint32_t color = RGB(240, 248, 255);
-    framebuffer_draw_rect(x, y, WINDOW_W, 2, color);
-    framebuffer_draw_rect(x, y + WINDOW_H - 2, WINDOW_W, 2, color);
-    framebuffer_draw_rect(x, y, 2, WINDOW_H, color);
-    framebuffer_draw_rect(x + WINDOW_W - 2, y, 2, WINDOW_H, color);
+    fill_rect(x, y, WINDOW_W, 2, color);
+    fill_rect(x, y + WINDOW_H - 2, WINDOW_W, 2, color);
+    fill_rect(x, y, 2, WINDOW_H, color);
+    fill_rect(x + WINDOW_W - 2, y, 2, WINDOW_H, color);
 }
 
 static void bring_to_front(int index)
@@ -537,6 +626,7 @@ void kernel_main(void)
         stop_with_error("Framebuffer initialization failed");
 
     rtc_get_time(clock_text);
+    clip_active = false;
     draw_desktop_background();
     draw_status_bar();
 
@@ -574,14 +664,43 @@ void kernel_main(void)
             update_clock();
         }
 
-        if (!mouse_available)
+        if (!mouse_available) {
+            __asm__ volatile ("pause");
             continue;
+        }
 
+        /*
+         * Bekleyen fare paketlerini topla. Her paket için ayrı ayrı
+         * silip çizmek yerine hareketi biriktirip tek seferde işliyoruz.
+         * Buton durumu değişirse biriktirmeyi bırakıyoruz ki tıklama
+         * olayları kaybolmasın.
+         */
         int dx = 0, dy = 0;
         uint8_t buttons = previous_buttons;
+        bool got_packet = false;
 
-        if (!ps2_mouse_poll(&dx, &dy, &buttons))
+        for (int n = 0; n < MAX_MOUSE_PACKETS_PER_LOOP; n++) {
+            int pdx = 0, pdy = 0;
+            uint8_t pbuttons = buttons;
+
+            if (!ps2_mouse_poll(&pdx, &pdy, &pbuttons))
+                break;
+
+            got_packet = true;
+            dx += pdx;
+            dy += pdy;
+
+            bool button_changed = (pbuttons & 1u) != (previous_buttons & 1u);
+            buttons = pbuttons;
+
+            if (button_changed)
+                break;
+        }
+
+        if (!got_packet) {
+            __asm__ volatile ("pause");
             continue;
+        }
 
         int max_x = (int)framebuffer_width() - CURSOR_W;
         int max_y = (int)framebuffer_height() - CURSOR_H;
@@ -599,8 +718,7 @@ void kernel_main(void)
         bool left_up = !(buttons & 1u) && (previous_buttons & 1u);
 
         if (moved || left_down || left_up) {
-            /* Eski imleci kaydedilmiş piksellerden değil,
-               masaüstünü o küçük bölgede yeniden çizerek temizle. */
+            /* Eski imleci masaüstünü o küçük bölgede yeniden çizerek temizle. */
             redraw_region(cursor_x, cursor_y, CURSOR_W, CURSOR_H);
 
             cursor_x = new_x;
