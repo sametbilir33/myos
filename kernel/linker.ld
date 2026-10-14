@@ -1,4 +1,5 @@
 OUTPUT_FORMAT(elf64-x86-64)
+OUTPUT_ARCH(i386:x86-64)
 ENTRY(kernel_main)
 
 KERNEL_VMA = 0xffffffff80000000;
@@ -6,10 +7,10 @@ KERNEL_LMA = 0x100000;
 
 PHDRS
 {
-    requests PT_LOAD;
-    text PT_LOAD;
-    rodata PT_LOAD;
-    data PT_LOAD;
+    requests PT_LOAD FLAGS(6);
+    text     PT_LOAD FLAGS(5);
+    rodata   PT_LOAD FLAGS(4);
+    data     PT_LOAD FLAGS(6);
 }
 
 SECTIONS
@@ -23,21 +24,21 @@ SECTIONS
         KEEP(*(.limine_requests_end))
     } :requests
 
-    . = ALIGN(4K);
+    . = KERNEL_VMA + ALIGN(SIZEOF(.limine_requests), 4096);
 
     .text : AT(ADDR(.text) - KERNEL_VMA + KERNEL_LMA)
     {
         *(.text .text.*)
     } :text
 
-    . = ALIGN(4K);
+    . = ALIGN(4096);
 
     .rodata : AT(ADDR(.rodata) - KERNEL_VMA + KERNEL_LMA)
     {
         *(.rodata .rodata.*)
     } :rodata
 
-    . = ALIGN(4K);
+    . = ALIGN(4096);
 
     .data : AT(ADDR(.data) - KERNEL_VMA + KERNEL_LMA)
     {
@@ -49,4 +50,11 @@ SECTIONS
         *(COMMON)
         *(.bss .bss.*)
     } :data
+
+    /DISCARD/ :
+    {
+        *(.eh_frame*)
+        *(.note .note.*)
+        *(.comment)
+    }
 }

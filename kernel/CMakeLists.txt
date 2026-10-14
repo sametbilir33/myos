@@ -12,6 +12,9 @@ endif()
 
 add_library(kernel_core OBJECT
     core/main.c
+    graphics/framebuffer.c
+    input/ps2_mouse.c
+    drivers/serial.c
 )
 
 target_include_directories(kernel_core PRIVATE
@@ -27,6 +30,8 @@ target_compile_options(kernel_core PRIVATE
     -fno-asynchronous-unwind-tables
     -Wall
     -Wextra
+    -mcmodel=kernel
+    -fno-pie
 )
 
 set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel.elf")
