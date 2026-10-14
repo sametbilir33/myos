@@ -5,6 +5,7 @@
 #include <ps2_mouse.h>
 #include <serial.h>
 #include <gui/cursor.h>
+#include <gui/events.h>
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -537,6 +538,7 @@ void kernel_main(void)
     else
         serial_write("[WARN] PS/2 mouse unavailable\n");
 
+    gui_events_init();
     uint8_t previous_buttons = 0;
     uint32_t clock_counter = 0;
 
@@ -580,14 +582,53 @@ void kernel_main(void)
             cursor_x = new_x;
             cursor_y = new_y;
 
-            if (dragging && moved)
-                update_drag(cursor_x, cursor_y);
+            if (moved) {
+                gui_event_push((struct gui_event) {
+                    .type = GUI_EVENT_MOUSE_MOVE,
+                    .x = cursor_x,
+                    .y = cursor_y,
+                    .button = 0
+                });
+            }
 
-            if (left_down && !dragging)
-                handle_click(cursor_x, cursor_y);
+            if (left_down) {
+                gui_event_push((struct gui_event) {
+                    .type = GUI_EVENT_MOUSE_BUTTON_DOWN,
+                    .x = cursor_x,
+                    .y = cursor_y,
+                    .button = 1
+                });
+            }
 
-            if (left_up && dragging)
-                finish_drag();
+            if (left_up) {
+                gui_event_push((struct gui_event) {
+                    .type = GUI_EVENT_MOUSE_BUTTON_UP,
+                    .x = cursor_x,
+                    .y = cursor_y,
+                    .button = 1
+                });
+            }
+
+            struct gui_event event;
+
+            while (gui_event_poll(&event)) {
+                switch (event.type) {
+                case GUI_EVENT_MOUSE_MOVE:
+                    if (dragging)
+                        update_drag(event.x, event.y);
+                    break;
+
+                case GUI_EVENT_MOUSE_BUTTON_DOWN:
+                    if (event.button == 1 && !dragging)
+                        handle_click(event.x, event.y);
+                    break;
+
+                case GUI_EVENT_MOUSE_BUTTON_UP:
+                    if (event.button == 1 && dragging)
+                        finish_drag();
+                    break;
+                }
+            }
 
             cursor_draw_at(cursor_x, cursor_y);
         }
