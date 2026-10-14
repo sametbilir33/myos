@@ -4,6 +4,7 @@
 #include <graphics.h>
 #include <ps2_mouse.h>
 #include <serial.h>
+#include <gui/cursor.h>
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -52,7 +53,6 @@ static int next_window_offset;
 static bool menu_open;
 static int cursor_x = 100;
 static int cursor_y = 100;
-static uint32_t cursor_underlay[CURSOR_W * CURSOR_H];
 static char clock_text[9] = "00:00:00";
 static int last_clock_second = -1;
 
@@ -62,49 +62,6 @@ static int drag_start_x, drag_start_y;
 static int drag_original_x, drag_original_y;
 static int drag_preview_x, drag_preview_y;
 
-static const uint16_t cursor_bitmap[CURSOR_H] = {
-    0x8000, 0xC000, 0xE000, 0xF000, 0xF800,
-    0xFC00, 0xFE00, 0xFF00, 0xFF80, 0xFFC0,
-    0xFFE0, 0xFFF0, 0xFFF8, 0xF7C0, 0xE3E0,
-    0xC1F0, 0x80F8, 0x007C, 0x0038, 0x0010
-};
-
-static bool cursor_bit(int x, int y)
-{
-    if (x < 0 || x >= CURSOR_W || y < 0 || y >= CURSOR_H)
-        return false;
-
-    return (cursor_bitmap[y] & (0x8000u >> x)) != 0;
-}
-
-static void cursor_restore(void)
-{
-    for (int y = 0; y < CURSOR_H; y++) {
-        for (int x = 0; x < CURSOR_W; x++)
-            framebuffer_set_pixel(cursor_x + x, cursor_y + y, cursor_underlay[y * CURSOR_W + x]);
-    }
-}
-
-static void cursor_draw(void)
-{
-    for (int y = 0; y < CURSOR_H; y++) {
-        for (int x = 0; x < CURSOR_W; x++)
-            cursor_underlay[y * CURSOR_W + x] = framebuffer_get_pixel(cursor_x + x, cursor_y + y);
-    }
-
-    uint32_t outline = RGB(5, 10, 18);
-    uint32_t fill = RGB(250, 252, 255);
-
-    for (int y = 0; y < CURSOR_H; y++) {
-        for (int x = 0; x < CURSOR_W; x++) {
-            if (!cursor_bit(x, y))
-                continue;
-
-            bool edge = !cursor_bit(x - 1, y) || !cursor_bit(x + 1, y) || !cursor_bit(x, y - 1) || !cursor_bit(x, y + 1);
-            framebuffer_set_pixel(cursor_x + x, cursor_y + y, edge ? outline : fill);
-        }
-    }
-}
 
 static inline void outb(uint16_t port, uint8_t value)
 {
@@ -528,9 +485,9 @@ static void update_clock(void)
     for (int i = 0; i < 9; i++)
         clock_text[i] = new_time[i];
 
-    cursor_restore();
+    cursor_restore_at(cursor_x, cursor_y);
     redraw_region((int)framebuffer_width() - 80, 0, 80, SCREEN_BAR_HEIGHT);
-    cursor_draw();
+    cursor_draw_at(cursor_x, cursor_y);
 }
 
 static void stop_with_error(const char *message)
@@ -571,7 +528,7 @@ void kernel_main(void)
     if (cursor_y > (int)framebuffer_height() - CURSOR_H)
         cursor_y = (int)framebuffer_height() - CURSOR_H;
 
-    cursor_draw();
+    cursor_draw_at(cursor_x, cursor_y);
 
     bool mouse_available = ps2_mouse_init();
 
@@ -618,7 +575,7 @@ void kernel_main(void)
         bool left_up = !(buttons & 1u) && (previous_buttons & 1u);
 
         if (moved || left_down || left_up) {
-            cursor_restore();
+            cursor_restore_at(cursor_x, cursor_y);
 
             cursor_x = new_x;
             cursor_y = new_y;
@@ -632,7 +589,7 @@ void kernel_main(void)
             if (left_up && dragging)
                 finish_drag();
 
-            cursor_draw();
+            cursor_draw_at(cursor_x, cursor_y);
         }
 
         previous_buttons = buttons;
