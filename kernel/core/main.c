@@ -506,8 +506,8 @@ static void update_clock(void)
     for (int i = 0; i < 9; i++)
         clock_text[i] = new_time[i];
 
-    cursor_restore_at(cursor_x, cursor_y);
     redraw_region((int)framebuffer_width() - 80, 0, 80, SCREEN_BAR_HEIGHT);
+    redraw_region(cursor_x, cursor_y, CURSOR_W, CURSOR_H);
     cursor_draw_at(cursor_x, cursor_y);
 }
 
@@ -550,6 +550,7 @@ void kernel_main(void)
         cursor_y = (int)framebuffer_height() - CURSOR_H;
 
     cursor_draw_at(cursor_x, cursor_y);
+    serial_write("[DEBUG] Initial cursor draw completed\n");
 
     bool mouse_available = ps2_mouse_init();
 
@@ -598,7 +599,9 @@ void kernel_main(void)
         bool left_up = !(buttons & 1u) && (previous_buttons & 1u);
 
         if (moved || left_down || left_up) {
-            cursor_restore_at(cursor_x, cursor_y);
+            /* Eski imleci kaydedilmiş piksellerden değil,
+               masaüstünü o küçük bölgede yeniden çizerek temizle. */
+            redraw_region(cursor_x, cursor_y, CURSOR_W, CURSOR_H);
 
             cursor_x = new_x;
             cursor_y = new_y;
