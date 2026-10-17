@@ -634,50 +634,63 @@ void kernel_main(void)
     pci_init();
 
     struct pci_device xhci;
+    bool xhci_found = pci_find_xhci(&xhci);
+    bool xhci_enabled = false;
 
-if (pci_find_xhci(&xhci)) {
-    if (pci_enable_bus_mastering(&xhci)) {
-        serial_write("[USB] PCI memory space and bus mastering enabled\n");
-    }
-}
+    if (xhci_found) {
+        xhci_enabled = pci_enable_bus_mastering(&xhci);
 
-if (hhdm_request.response != 0) {
-    uint64_t hhdm_offset = hhdm_request.response->offset;
-
-    serial_write("[xHCI] HHDM offset: ");
-    serial_write_hex(hhdm_offset);
-    serial_write("\n");
-
-    if (memmap_request.response != 0 &&
-        dma_init(
-            (struct limine_memmap_response *)
-                memmap_request.response,
-            hhdm_offset
-        )) {
-
-        uint64_t test_phys = 0;
-        void *test_virt = dma_alloc(4096, &test_phys);
-
-        if (test_virt) {
-            serial_write("[DMA] Test page virtual: ");
-            serial_write_hex((uintptr_t)test_virt);
-            serial_write("\n");
-
-            serial_write("[DMA] Test page physical: ");
-            serial_write_hex(test_phys);
-            serial_write("\n");
+        if (xhci_enabled) {
+            serial_write("[USB] PCI memory space and bus mastering enabled\n");
         } else {
-            serial_write("[DMA] Test allocation failed\n");
+            serial_write("[USB] Failed to enable PCI bus mastering\n");
+        }
+    }
+
+    bool usb_mouse_available = false;
+
+    if (hhdm_request.response != 0) {
+        uint64_t hhdm_offset = hhdm_request.response->offset;
+
+        serial_write("[xHCI] HHDM offset: ");
+        serial_write_hex(hhdm_offset);
+        serial_write("\n");
+
+        bool dma_ready = false;
+
+        if (memmap_request.response != 0) {
+            dma_ready = dma_init(
+                (struct limine_memmap_response *)
+                    memmap_request.response,
+                hhdm_offset
+            );
+        }
+
+        if (dma_ready) {
+            uint64_t test_phys = 0;
+            void *test_virt = dma_alloc(4096, &test_phys);
+
+            if (test_virt) {
+                serial_write("[DMA] Test page virtual: ");
+                serial_write_hex((uintptr_t)test_virt);
+                serial_write("\n");
+
+                serial_write("[DMA] Test page physical: ");
+                serial_write_hex(test_phys);
+                serial_write("\n");
+            } else {
+                serial_write("[DMA] Test allocation failed\n");
+            }
+
+            if (xhci_enabled) {
+                usb_mouse_available = xhci_probe(xhci.bar0, hhdm_offset);
+            }
+        } else {
+            serial_write("[DMA] Initialization failed\n");
         }
     } else {
-        serial_write("[DMA] Initialization failed\n");
+        serial_write("[xHCI] Limine HHDM response missing\n");
     }
-
-    /* Şimdilik denetleyici testine devam et. */
-    xhci_probe(xhci.bar0, hhdm_offset);
-} else {
-    serial_write("[xHCI] Limine HHDM response missing\n");
-}
 
     serial_write("[IRQ] IDT, PIC and PIT initialized\n");
 
@@ -711,17 +724,28 @@ if (hhdm_request.response != 0) {
     cursor_draw_at(cursor_x, cursor_y);
     serial_write("[DEBUG] Initial cursor draw completed\n");
 
-    bool mouse_available = ps2_mouse_init();
+    bool ps2_mouse_available = false;
 
-    if (mouse_available)
-        serial_write("[BOOT] PS/2 mouse ready\n");
-    else
-        serial_write("[WARN] PS/2 mouse unavailable\n");
+    if (usb_mouse_available) {
+        serial_write("[BOOT] USB HID mouse ready\n");
+    } else {
+        serial_write("[BOOT] USB mouse unavailable, trying PS/2\n");
+
+        ps2_mouse_available = ps2_mouse_init();
+
+        if (ps2_mouse_available)
+            serial_write("[BOOT] PS/2 mouse ready\n");
+        else
+            serial_write("[WARN] No mouse device available\n");
+    }
+
+    bool mouse_available =
+        usb_mouse_available || ps2_mouse_available;
 
     gui_events_init();
     gui_events_set_handler(handle_gui_event);
 
-    interrupts_enable(mouse_available);
+    interrupts_enable(ps2_mouse_available);
 
     uint64_t last_mouse_irq_count = 0;
 
@@ -734,88 +758,94 @@ if (hhdm_request.response != 0) {
     for (;;) {
         uint64_t irq_count = interrupts_mouse_irq_count();
 
-    if (irq_count != last_mouse_irq_count) {
-        serial_write("[DEBUG] IRQ12 mouse interrupt received\n");
-        last_mouse_irq_count = irq_count;
-    }
+        if (!usb_mouse_available && irq_count != last_mouse_irq_count) {
+            serial_write("[DEBUG] IRQ12 mouse interrupt received\n");
+            last_mouse_irq_count = irq_count;
+        }
 
         uint64_t now = interrupts_ticks();
 
-        if (now - last_mouse_diag_tick >= 100) {
-    last_mouse_diag_tick = now;
+        if (!usb_mouse_available && now - last_mouse_diag_tick >= 100) {
+            last_mouse_diag_tick = now;
 
-    serial_write("[MOUSE] IRQs: ");
-serial_write_dec(interrupts_mouse_irq_count());
+            serial_write("[MOUSE] IRQs: ");
+            serial_write_dec(interrupts_mouse_irq_count());
 
-serial_write(" | bytes: ");
-serial_write_dec(ps2_mouse_bytes_count());
+            serial_write(" | bytes: ");
+            serial_write_dec(ps2_mouse_bytes_count());
 
-serial_write(" | packets: ");
-serial_write_dec(ps2_mouse_packets_count());
+            serial_write(" | packets: ");
+            serial_write_dec(ps2_mouse_packets_count());
 
-serial_write(" | queued: ");
-serial_write_dec(ps2_mouse_queued_count());
+            serial_write(" | queued: ");
+            serial_write_dec(ps2_mouse_queued_count());
 
-serial_write(" | status: ");
-serial_write_dec(interrupts_mouse_last_status());
+            serial_write(" | status: ");
+            serial_write_dec(interrupts_mouse_last_status());
 
-serial_write("\n");
-}
+            serial_write("\n");
+        }
 
-if (now - last_clock_tick >= 100) {
-    last_clock_tick = now - (now % 100);
-    update_clock();
-}
+        if (now - last_clock_tick >= 100) {
+            last_clock_tick = now - (now % 100);
+            update_clock();
+        }
 
         if (!mouse_available) {
-    __asm__ volatile ("sti\n\t"
-                      "hlt"
-                      :
-                      :
-                      : "memory");
-    continue;
-}
+            __asm__ volatile ("sti\n\t"
+                              "hlt"
+                              :
+                              :
+                              : "memory");
+            continue;
+        }
 
-        /*
-         * Bekleyen fare paketlerini topla. Her paket için ayrı ayrı
-         * silip çizmek yerine hareketi biriktirip tek seferde işliyoruz.
-         * Buton durumu değişirse biriktirmeyi bırakıyoruz ki tıklama
-         * olayları kaybolmasın.
-         */
-        int dx = 0, dy = 0;
+        int dx = 0;
+        int dy = 0;
         uint8_t buttons = previous_buttons;
         bool got_packet = false;
 
-        for (int n = 0; n < MAX_MOUSE_PACKETS_PER_LOOP; n++) {
-            int pdx = 0, pdy = 0;
-            uint8_t pbuttons = buttons;
+        if (usb_mouse_available) {
+            /* USB sürücüsü hazır transfer olaylarını poller üzerinden okur. */
+            got_packet = xhci_mouse_read_packet(
+                &dx,
+                &dy,
+                &buttons
+            );
+        } else {
+            /* PS/2 yedek yolu. */
+            for (int n = 0; n < MAX_MOUSE_PACKETS_PER_LOOP; n++) {
+                int pdx = 0;
+                int pdy = 0;
+                uint8_t pbuttons = buttons;
 
-            if (!ps2_mouse_read_packet(&pdx, &pdy, &pbuttons))
-            break;
+                if (!ps2_mouse_read_packet(&pdx, &pdy, &pbuttons))
+                    break;
 
-            if (pdx != 0 || pdy != 0) {
-                serial_write("[DEBUG] Non-zero mouse delta\n");
+                if (pdx != 0 || pdy != 0) {
+                    serial_write("[DEBUG] Non-zero mouse delta\n");
+                }
+
+                got_packet = true;
+                dx += pdx;
+                dy += pdy;
+
+                bool button_changed = (pbuttons & 1u) != (previous_buttons & 1u);
+                buttons = pbuttons;
+
+                if (button_changed)
+                    break;
             }
-
-            got_packet = true;
-            dx += pdx;
-            dy += pdy;
-
-            bool button_changed = (pbuttons & 1u) != (previous_buttons & 1u);
-            buttons = pbuttons;
-
-            if (button_changed)
-                break;
         }
 
         if (!got_packet) {
-    __asm__ volatile ("sti\n\t"
-                      "hlt"
-                      :
-                      :
-                      : "memory");
-    continue;
-}
+            __asm__ volatile ("sti\n\t"
+                              "hlt"
+                              :
+                              :
+                              : "memory");
+            continue;
+        }
 
         int max_x = (int)framebuffer_width() - CURSOR_W;
         int max_y = (int)framebuffer_height() - CURSOR_H;
