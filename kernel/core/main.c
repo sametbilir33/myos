@@ -6,6 +6,7 @@
 #include <serial.h>
 #include <gui/cursor.h>
 #include <gui/events.h>
+#include <interrupts.h>
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -30,7 +31,6 @@ static volatile uint64_t limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARK
 #define WINDOW_W 420
 #define WINDOW_H 240
 #define MAX_WINDOWS 8
-#define CLOCK_POLL_INTERVAL 100000u
 #define MAX_MOUSE_PACKETS_PER_LOOP 32
 
 static const uint32_t COLOR_BACKGROUND = 0x00213B60;
@@ -612,6 +612,11 @@ static void stop_with_error(const char *message)
 void kernel_main(void)
 {
     serial_init();
+
+    __asm__ volatile ("cli" ::: "memory");
+    interrupts_init();
+    serial_write("[IRQ] IDT, PIC and PIT initialized\n");
+
     serial_write("\n[BOOT] MyOS desktop starting\n");
 
     if (!framebuffer_request.response)
@@ -651,23 +656,25 @@ void kernel_main(void)
 
     gui_events_init();
     gui_events_set_handler(handle_gui_event);
+
+    interrupts_enable(mouse_available);
+    serial_write("[IRQ] Interrupts enabled\n");
+
     uint8_t previous_buttons = 0;
-    uint32_t clock_counter = 0;
+    uint64_t last_clock_tick = 0;
 
     for (;;) {
-        /*
-         * RTC'yi her döngüde okumak yerine aralıklı kontrol et.
-         * Şimdilik timer kesmesi kullanmadığımız için bu bir polling yaklaşımı.
-         */
-        if (++clock_counter >= CLOCK_POLL_INTERVAL) {
-            clock_counter = 0;
-            update_clock();
-        }
+        uint64_t now = interrupts_ticks();
+
+if (now - last_clock_tick >= 100) {
+    last_clock_tick = now - (now % 100);
+    update_clock();
+}
 
         if (!mouse_available) {
-            __asm__ volatile ("pause");
-            continue;
-        }
+    __asm__ volatile ("hlt");
+    continue;
+}
 
         /*
          * Bekleyen fare paketlerini topla. Her paket için ayrı ayrı
@@ -683,8 +690,8 @@ void kernel_main(void)
             int pdx = 0, pdy = 0;
             uint8_t pbuttons = buttons;
 
-            if (!ps2_mouse_poll(&pdx, &pdy, &pbuttons))
-                break;
+            if (!ps2_mouse_read_packet(&pdx, &pdy, &pbuttons))
+    break;
 
             got_packet = true;
             dx += pdx;
@@ -698,9 +705,9 @@ void kernel_main(void)
         }
 
         if (!got_packet) {
-            __asm__ volatile ("pause");
-            continue;
-        }
+    __asm__ volatile ("hlt");
+    continue;
+}
 
         int max_x = (int)framebuffer_width() - CURSOR_W;
         int max_y = (int)framebuffer_height() - CURSOR_H;

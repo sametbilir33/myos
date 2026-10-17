@@ -53,6 +53,7 @@ Make sure Clang, LLD, CMake, Ninja, NASM, QEMU, xorriso, and the required Limine
 From the repository root, configure and build:
 
 ```bash
+rm -rf build/
 cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-x86_64.cmake
 cmake --build build
 ```

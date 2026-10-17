@@ -1,3 +1,4 @@
+
 #ifndef MYOS_PS2_MOUSE_H
 #define MYOS_PS2_MOUSE_H
 
@@ -6,7 +7,10 @@
 
 bool ps2_mouse_init(void);
 
-/* Yeni bir tam fare paketi geldiyse true döndürür. */
-bool ps2_mouse_poll(int *dx, int *dy, uint8_t *buttons);
+/* IRQ12 işleyicisi her fare baytında bunu çağırır. */
+void ps2_mouse_irq_byte(uint8_t data);
+
+/* Donanımı poll etmez, kuyruktan hazır paketi alır. */
+bool ps2_mouse_read_packet(int *dx, int *dy, uint8_t *buttons);
 
 #endif

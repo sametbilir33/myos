@@ -33,6 +33,7 @@ target_compile_options(kernel_core PRIVATE
     -Wall
     -Wextra
     -mcmodel=kernel
+    -mgeneral-regs-only
 )
 
 set(KERNEL_ELF "${CMAKE_BINARY_DIR}/kernel.elf")
