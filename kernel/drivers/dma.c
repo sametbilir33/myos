@@ -42,6 +42,10 @@ bool dma_init(
         if (end < base)
             continue;
 
+        /* İlk 1 MiB içindeki düşük belleği DMA için kullanma. */
+        if (base < 0x100000)
+            base = 0x100000;
+
         /* Başlangıcı sayfa sınırına hizala. */
         if (base > UINT64_MAX - (PAGE_SIZE - 1))
             continue;
