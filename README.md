@@ -1,34 +1,44 @@
-
 # MyOS
 
-**A tiny 64-bit operating system with a GUI, built from scratch.**
+**A tiny 64-bit operating system with a graphical desktop, built from scratch.**
 
-> ⚠️ Experimental project. Very much a work in progress.
+> ⚠️ **Experimental project.** MyOS is a work in progress and is not intended for daily use.
 
-MyOS is a hobby operating system project focused on learning how operating systems work, from booting the kernel to drawing a graphical desktop.
+MyOS is a hobby operating system project focused on learning how operating systems work, from booting a kernel to interacting with hardware and drawing a graphical desktop.
 
-It's an experiment in low-level programming, graphics, hardware interaction, and figuring things out one bug at a time.
+The project is an experiment in low-level programming, graphics, USB hardware support, and solving problems one bug at a time.
 
 ## ✨ Features
 
-- 64-bit x86 kernel
+### Kernel and boot
+- 64-bit x86-64 kernel
 - Limine boot protocol
 - Linear framebuffer graphics
+- BIOS boot support, with UEFI support depending on the ISO configuration
+
+### Graphical desktop
 - Custom bitmap mouse cursor
-- Basic graphical desktop and status bar
+- Desktop background and status bar
 - Dropdown application menu
 - Multiple application windows
 - Window focusing and closing
-- Classic window dragging with an outline preview
+- Window dragging with an outline preview
 - Basic real-time clock display
-- Experimental PS/2 mouse input
-- BIOS boot support, with UEFI boot support depending on the ISO configuration
+- GUI event queue for mouse interaction
+
+### USB input
+- xHCI USB host-controller initialization
+- USB device enumeration for a connected device
+- Experimental USB HID Boot Mouse support
+- Interrupt-IN mouse transfers handled by the desktop loop
+
+The current input path uses a **USB mouse**. PS/2 mouse support has been removed.
 
 ## 🧪 Current Status
 
-MyOS is nowhere near a daily-driver operating system. It's an evolving experiment.
+MyOS can boot into a basic graphical desktop and receive mouse input through its experimental xHCI/HID implementation.
 
-The desktop and window management are under development.
+This is still an early-stage operating system. USB support is limited, and broader device compatibility, keyboard input, functional applications, and storage are not implemented yet.
 
 Expect bugs, missing features, rough edges, and the occasional "why did that happen?" moment.
 
@@ -42,7 +52,7 @@ Expect bugs, missing features, rough edges, and the occasional "why did that hap
 - Ninja
 - NASM
 - QEMU
-- A questionable amount of AI-generated code
+- AI-assisted development
 
 ## 🚀 Building
 
@@ -58,27 +68,31 @@ cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-x86_64.cmake
 cmake --build build
 ```
 
-If the build completes successfully and produces `build/myos.iso`, launch it with QEMU:
+If the build completes successfully and produces `build/myos.iso`, launch it in QEMU with an xHCI controller and a virtual USB mouse:
 
 ```bash
-qemu-system-x86_64 -machine pc -m 256M -no-reboot -no-shutdown -serial stdio -cdrom build/myos.iso
+qemu-system-x86_64 -machine q35 -m 256M -no-reboot -no-shutdown -serial stdio -device qemu-xhci,id=xhci -device usb-mouse,bus=xhci.0 -cdrom build/myos.iso
 ```
 
-Build instructions may change as the project evolves.
+The virtual xHCI controller and USB mouse are important: launching QEMU without them does not provide the USB mouse hardware expected by the current input implementation.
+
+Build and runtime instructions may change as the project evolves.
 
 ## 🗺️ Roadmap
 
-- [x] Boot a 64-bit kernel
+- [x] Boot a 64-bit kernel with Limine
 - [x] Initialize framebuffer graphics
-- [x] Draw a graphical desktop
-- [x] Add mouse cursor support
+- [x] Draw a graphical desktop and status bar
+- [x] Add a custom mouse cursor
 - [x] Add basic window management
+- [x] Replace PS/2 mouse input with experimental USB HID Boot Mouse input
 - [ ] Improve partial redraw and eliminate visual artifacts
-- [ ] Add keyboard input
-- [ ] Implement functional applications
+- [ ] Add USB HID keyboard input
+- [ ] Add keyboard focus and text input to GUI windows
+- [ ] Implement functional desktop applications
+- [ ] Build a basic terminal/shell
 - [ ] Add a filesystem
-- [ ] Build a basic shell
-- [ ] Improve memory management and hardware support
+- [ ] Improve memory management and broaden hardware support
 
 ## 🤖 Development Philosophy
 
@@ -98,4 +112,4 @@ See [`LICENSE`](LICENSE) for the complete license text.
 
 ## ❤️ Disclaimer
 
-This project is provided for educational and experimental purposes. It comes with no warranty. Run it in an emulator unless you understand the risks of testing experimental operating system code on physical hardware.
+This project is provided for educational and experimental purposes and comes with no warranty. Run it in an emulator unless you understand the risks of testing experimental operating-system code on physical hardware.
