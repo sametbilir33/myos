@@ -704,7 +704,11 @@ if (now - last_clock_tick >= 100) {
 }
 
         if (!mouse_available) {
-    __asm__ volatile ("hlt");
+    __asm__ volatile ("sti\n\t"
+                      "hlt"
+                      :
+                      :
+                      : "memory");
     continue;
 }
 
@@ -741,7 +745,11 @@ if (now - last_clock_tick >= 100) {
         }
 
         if (!got_packet) {
-    __asm__ volatile ("hlt");
+    __asm__ volatile ("sti\n\t"
+                      "hlt"
+                      :
+                      :
+                      : "memory");
     continue;
 }
 
