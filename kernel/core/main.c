@@ -2,7 +2,6 @@
 #include <stdbool.h>
 #include <limine.h>
 #include <graphics.h>
-#include <ps2_mouse.h>
 #include <serial.h>
 #include <gui/cursor.h>
 #include <gui/events.h>
@@ -47,7 +46,6 @@ static volatile uint64_t limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARK
 #define WINDOW_W 420
 #define WINDOW_H 240
 #define MAX_WINDOWS 8
-#define MAX_MOUSE_PACKETS_PER_LOOP 32
 
 static const uint32_t COLOR_BACKGROUND = 0x00213B60;
 static const uint32_t COLOR_BAR = 0x00132642;
@@ -80,8 +78,6 @@ static int drag_start_x, drag_start_y;
 static int drag_original_x, drag_original_y;
 static int drag_preview_x, drag_preview_y;
 
-/* Şu an aktif olan clip bölgesi (kendi tarafımızda tutuyoruz ki
-   bölge dışında kalan çizimleri hiç göndermeyelim). */
 static bool clip_active;
 static int clip_x, clip_y, clip_w, clip_h;
 
@@ -168,10 +164,6 @@ static bool inside(int px, int py, int x, int y, int w, int h)
     return px >= x && px < x + w && py >= y && py < y + h;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Clip'e duyarlı çizim sarmalayıcıları                               */
-/* ------------------------------------------------------------------ */
-
 static void fill_rect(int x, int y, int w, int h, uint32_t color)
 {
     if (w <= 0 || h <= 0)
@@ -189,7 +181,7 @@ static void fill_rect(int x, int y, int w, int h, uint32_t color)
         if (y2 > cy2) y2 = cy2;
 
         if (x2 <= x || y2 <= y)
-            return; /* tamamen bölge dışında, hiç çizme */
+            return;
 
         w = x2 - x;
         h = y2 - y;
@@ -208,8 +200,6 @@ static int text_length(const char *s)
 static void draw_text(int x, int y, const char *text, uint32_t color, int scale)
 {
     if (clip_active) {
-        /* Muhafazakar sınırlayıcı kutu: font boyutu tam bilinmediği için
-           biraz bol tutuyoruz. Sadece tamamen dışarıda kalanı atlıyoruz. */
         int w = text_length(text) * 10 * scale;
         int h = 16 * scale;
 
@@ -281,7 +271,6 @@ static void draw_window(const struct app_window *win)
 {
     int x = win->x, y = win->y, w = WINDOW_W, h = WINDOW_H;
 
-    /* Pencere bölgeyle hiç kesişmiyorsa tüm çizimi atla. */
     if (clip_active) {
         if (x + w <= clip_x || x >= clip_x + clip_w ||
             y + h <= clip_y || y >= clip_y + clip_h)
@@ -322,10 +311,8 @@ static void draw_window(const struct app_window *win)
     }
 }
 
-/* Yalnızca belirtilen dikdörtgeni yeniden oluştur. */
 static void redraw_region(int x, int y, int width, int height)
 {
-    /* Ekranla kesiştir. */
     int sw = (int)framebuffer_width();
     int sh = (int)framebuffer_height();
     int x2 = x + width;
@@ -693,7 +680,6 @@ void kernel_main(void)
     }
 
     serial_write("[IRQ] IDT, PIC and PIT initialized\n");
-
     serial_write("\n[BOOT] MyOS desktop starting\n");
 
     if (!framebuffer_request.response)
@@ -724,67 +710,25 @@ void kernel_main(void)
     cursor_draw_at(cursor_x, cursor_y);
     serial_write("[DEBUG] Initial cursor draw completed\n");
 
-    bool ps2_mouse_available = false;
-
     if (usb_mouse_available) {
         serial_write("[BOOT] USB HID mouse ready\n");
     } else {
-        serial_write("[BOOT] USB mouse unavailable, trying PS/2\n");
-
-        ps2_mouse_available = ps2_mouse_init();
-
-        if (ps2_mouse_available)
-            serial_write("[BOOT] PS/2 mouse ready\n");
-        else
-            serial_write("[WARN] No mouse device available\n");
+        serial_write("[WARN] USB mouse unavailable\n");
     }
 
-    bool mouse_available =
-        usb_mouse_available || ps2_mouse_available;
+    bool mouse_available = usb_mouse_available;
 
     gui_events_init();
     gui_events_set_handler(handle_gui_event);
 
-    interrupts_enable(ps2_mouse_available);
-
-    uint64_t last_mouse_irq_count = 0;
-
+    interrupts_enable();
     serial_write("[IRQ] Interrupts enabled\n");
 
     uint8_t previous_buttons = 0;
     uint64_t last_clock_tick = 0;
-    uint64_t last_mouse_diag_tick = 0;
 
     for (;;) {
-        uint64_t irq_count = interrupts_mouse_irq_count();
-
-        if (!usb_mouse_available && irq_count != last_mouse_irq_count) {
-            serial_write("[DEBUG] IRQ12 mouse interrupt received\n");
-            last_mouse_irq_count = irq_count;
-        }
-
         uint64_t now = interrupts_ticks();
-
-        if (!usb_mouse_available && now - last_mouse_diag_tick >= 100) {
-            last_mouse_diag_tick = now;
-
-            serial_write("[MOUSE] IRQs: ");
-            serial_write_dec(interrupts_mouse_irq_count());
-
-            serial_write(" | bytes: ");
-            serial_write_dec(ps2_mouse_bytes_count());
-
-            serial_write(" | packets: ");
-            serial_write_dec(ps2_mouse_packets_count());
-
-            serial_write(" | queued: ");
-            serial_write_dec(ps2_mouse_queued_count());
-
-            serial_write(" | status: ");
-            serial_write_dec(interrupts_mouse_last_status());
-
-            serial_write("\n");
-        }
 
         if (now - last_clock_tick >= 100) {
             last_clock_tick = now - (now % 100);
@@ -805,38 +749,7 @@ void kernel_main(void)
         uint8_t buttons = previous_buttons;
         bool got_packet = false;
 
-        if (usb_mouse_available) {
-            /* USB sürücüsü hazır transfer olaylarını poller üzerinden okur. */
-            got_packet = xhci_mouse_read_packet(
-                &dx,
-                &dy,
-                &buttons
-            );
-        } else {
-            /* PS/2 yedek yolu. */
-            for (int n = 0; n < MAX_MOUSE_PACKETS_PER_LOOP; n++) {
-                int pdx = 0;
-                int pdy = 0;
-                uint8_t pbuttons = buttons;
-
-                if (!ps2_mouse_read_packet(&pdx, &pdy, &pbuttons))
-                    break;
-
-                if (pdx != 0 || pdy != 0) {
-                    serial_write("[DEBUG] Non-zero mouse delta\n");
-                }
-
-                got_packet = true;
-                dx += pdx;
-                dy += pdy;
-
-                bool button_changed = (pbuttons & 1u) != (previous_buttons & 1u);
-                buttons = pbuttons;
-
-                if (button_changed)
-                    break;
-            }
-        }
+        got_packet = xhci_mouse_read_packet(&dx, &dy, &buttons);
 
         if (!got_packet) {
             __asm__ volatile ("sti\n\t"
@@ -863,7 +776,6 @@ void kernel_main(void)
         bool left_up = !(buttons & 1u) && (previous_buttons & 1u);
 
         if (moved || left_down || left_up) {
-            /* Eski imleci masaüstünü o küçük bölgede yeniden çizerek temizle. */
             redraw_region(cursor_x, cursor_y, CURSOR_W, CURSOR_H);
 
             cursor_x = new_x;

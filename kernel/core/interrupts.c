@@ -1,6 +1,5 @@
 
 #include <interrupts.h>
-#include <ps2_mouse.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -14,8 +13,6 @@
 #define PIT_HZ       100u
 
 #define IRQ0_VECTOR  32
-#define IRQ12_VECTOR 44
-
 #define PIC_EOI      0x20
 
 struct interrupt_frame {
@@ -39,32 +36,14 @@ struct idtr {
     uint64_t base;
 } __attribute__((packed));
 
-static struct idt_entry idt[256]
-    __attribute__((aligned(16)));
-
+static struct idt_entry idt[256] __attribute__((aligned(16)));
 static volatile uint64_t timer_ticks;
-
-static volatile uint64_t mouse_irq_count;
-
-uint64_t interrupts_mouse_irq_count(void)
-{
-    return mouse_irq_count;
-}
 
 static inline void outb(uint16_t port, uint8_t value)
 {
     __asm__ volatile ("outb %0, %1"
                       :
                       : "a"(value), "Nd"(port));
-}
-
-static inline uint8_t inb(uint16_t port)
-{
-    uint8_t value;
-    __asm__ volatile ("inb %1, %0"
-                      : "=a"(value)
-                      : "Nd"(port));
-    return value;
 }
 
 static inline void io_wait(void)
@@ -86,52 +65,16 @@ static void idt_set_gate(uint8_t vector, uintptr_t address,
     entry->reserved = 0;
 }
 
-/*
- * Clang/GCC interrupt attribute:
- * derleyici kayıtların korunmasını ve iretq dönüşünü üretir.
- */
 __attribute__((interrupt))
 static void timer_irq_handler(struct interrupt_frame *frame)
 {
     (void)frame;
     timer_ticks++;
-
-    /* IRQ0 master PIC üzerindedir. */
     outb(PIC1_COMMAND, PIC_EOI);
-}
-
-static volatile uint8_t mouse_last_status = 0;
-
-__attribute__((interrupt))
-static void mouse_irq_handler(struct interrupt_frame *frame)
-{
-    (void)frame;
-
-    mouse_irq_count++;
-
-    uint8_t status = inb(0x64);
-    mouse_last_status = status;
-
-    if (status & 0x01) {
-        uint8_t data = inb(0x60);
-
-        if (status & 0x20) {
-            ps2_mouse_irq_byte(data);
-        }
-    }
-
-    outb(PIC2_COMMAND, PIC_EOI);
-    outb(PIC1_COMMAND, PIC_EOI);
-}
-
-uint8_t interrupts_mouse_last_status(void)
-{
-    return mouse_last_status;
 }
 
 static void pic_remap(void)
 {
-    /* Başlangıçta bütün IRQ'ları maskele. */
     outb(PIC1_DATA, 0xFF);
     outb(PIC2_DATA, 0xFF);
 
@@ -155,7 +98,6 @@ static void pic_remap(void)
     outb(PIC2_DATA, 0x01);
     io_wait();
 
-    /* Şimdilik bütün IRQ'lar kapalı kalsın. */
     outb(PIC1_DATA, 0xFF);
     outb(PIC2_DATA, 0xFF);
 }
@@ -173,10 +115,6 @@ void interrupts_init(void)
 {
     __asm__ volatile ("cli" ::: "memory");
 
-    /*
-     * Limine tarafından kullanılan kod segmentini oku.
-     * Böylece CS değerinin 0x08 olduğunu varsaymıyoruz.
-     */
     uint16_t code_selector;
     __asm__ volatile ("mov %%cs, %0"
                       : "=r"(code_selector));
@@ -195,10 +133,6 @@ void interrupts_init(void)
                  (uintptr_t)timer_irq_handler,
                  code_selector);
 
-    idt_set_gate(IRQ12_VECTOR,
-                 (uintptr_t)mouse_irq_handler,
-                 code_selector);
-
     struct idtr descriptor = {
         .limit = (uint16_t)(sizeof(idt) - 1),
         .base = (uint64_t)(uintptr_t)&idt[0]
@@ -213,14 +147,11 @@ void interrupts_init(void)
     pit_init();
 }
 
-void interrupts_enable(bool mouse_enabled)
+void interrupts_enable(void)
 {
-    /*
-     * Master: IRQ0 ve slave PIC bağlantısı olan IRQ2 açık.
-     * Slave: sadece IRQ12 açık (fare mevcutsa).
-     */
-    outb(PIC1_DATA, 0xFA);
-    outb(PIC2_DATA, mouse_enabled ? 0xEF : 0xFF);
+    /* Yalnızca IRQ0, yani PIT zamanlayıcısı etkin. */
+    outb(PIC1_DATA, 0xFE);
+    outb(PIC2_DATA, 0xFF);
 
     __asm__ volatile ("sti" ::: "memory");
 }
