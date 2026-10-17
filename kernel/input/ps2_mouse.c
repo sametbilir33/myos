@@ -24,6 +24,25 @@ static volatile uint8_t queue_write;
 static uint8_t packet[3];
 static unsigned int packet_index;
 
+static volatile uint64_t mouse_bytes_received;
+static volatile uint64_t mouse_packets_completed;
+static volatile uint64_t mouse_packets_queued;
+
+uint64_t ps2_mouse_bytes_count(void)
+{
+    return mouse_bytes_received;
+}
+
+uint64_t ps2_mouse_packets_count(void)
+{
+    return mouse_packets_completed;
+}
+
+uint64_t ps2_mouse_queued_count(void)
+{
+    return mouse_packets_queued;
+}
+
 static inline uint8_t inb(uint16_t port)
 {
     uint8_t value;
@@ -161,6 +180,8 @@ bool ps2_mouse_init(void)
  */
 void ps2_mouse_irq_byte(uint8_t data)
 {
+    mouse_bytes_received++;
+
     if (packet_index == 0 && (data & 0x08) == 0)
         return;
 
@@ -189,6 +210,8 @@ void ps2_mouse_irq_byte(uint8_t data)
 
     __asm__ volatile ("" ::: "memory");
     queue_write = next;
+
+    mouse_packets_queued++;
 }
 
 /*

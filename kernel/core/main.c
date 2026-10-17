@@ -665,6 +665,7 @@ void kernel_main(void)
 
     uint8_t previous_buttons = 0;
     uint64_t last_clock_tick = 0;
+    uint64_t last_mouse_diag_tick = 0;
 
     for (;;) {
         uint64_t irq_count = interrupts_mouse_irq_count();
@@ -675,6 +676,21 @@ void kernel_main(void)
     }
 
         uint64_t now = interrupts_ticks();
+
+        if (now - last_mouse_diag_tick >= 100) {
+    last_mouse_diag_tick = now;
+
+    serial_write("[MOUSE] IRQ: ");
+    serial_write_dec(interrupts_mouse_irq_count());
+
+    serial_write(" | packets: ");
+    serial_write_dec(ps2_mouse_packets_count());
+
+    serial_write(" | queued: ");
+    serial_write_dec(ps2_mouse_queued_count());
+
+    serial_write("\n");
+}
 
 if (now - last_clock_tick >= 100) {
     last_clock_tick = now - (now % 100);
@@ -701,7 +717,11 @@ if (now - last_clock_tick >= 100) {
             uint8_t pbuttons = buttons;
 
             if (!ps2_mouse_read_packet(&pdx, &pdy, &pbuttons))
-    break;
+            break;
+
+            if (pdx != 0 || pdy != 0) {
+                serial_write("[DEBUG] Non-zero mouse delta\n");
+            }
 
             got_packet = true;
             dx += pdx;
