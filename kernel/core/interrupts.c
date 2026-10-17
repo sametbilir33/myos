@@ -100,6 +100,8 @@ static void timer_irq_handler(struct interrupt_frame *frame)
     outb(PIC1_COMMAND, PIC_EOI);
 }
 
+static volatile uint8_t mouse_last_status = 0;
+
 __attribute__((interrupt))
 static void mouse_irq_handler(struct interrupt_frame *frame)
 {
@@ -107,16 +109,24 @@ static void mouse_irq_handler(struct interrupt_frame *frame)
 
     mouse_irq_count++;
 
-    /*
-     * IRQ12, ikinci PS/2 portundan geldiği için bu bayt
-     * fare verisidir. Okuma işlemi IRQ'yu temizler.
-     */
-    uint8_t data = inb(0x60);
-    ps2_mouse_irq_byte(data);
+    uint8_t status = inb(0x64);
+    mouse_last_status = status;
 
-    /* Önce slave, ardından master PIC'e EOI. */
+    if (status & 0x01) {
+        uint8_t data = inb(0x60);
+
+        if (status & 0x20) {
+            ps2_mouse_irq_byte(data);
+        }
+    }
+
     outb(PIC2_COMMAND, PIC_EOI);
     outb(PIC1_COMMAND, PIC_EOI);
+}
+
+uint8_t interrupts_mouse_last_status(void)
+{
+    return mouse_last_status;
 }
 
 static void pic_remap(void)

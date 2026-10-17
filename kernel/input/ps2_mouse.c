@@ -191,6 +191,7 @@ void ps2_mouse_irq_byte(uint8_t data)
         return;
 
     packet_index = 0;
+    mouse_packets_completed++;
 
     if (packet[0] & 0xC0)
         return;

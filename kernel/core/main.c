@@ -680,16 +680,22 @@ void kernel_main(void)
         if (now - last_mouse_diag_tick >= 100) {
     last_mouse_diag_tick = now;
 
-    serial_write("[MOUSE] IRQ: ");
-    serial_write_dec(interrupts_mouse_irq_count());
+    serial_write("[MOUSE] IRQs: ");
+serial_write_dec(interrupts_mouse_irq_count());
 
-    serial_write(" | packets: ");
-    serial_write_dec(ps2_mouse_packets_count());
+serial_write(" | bytes: ");
+serial_write_dec(ps2_mouse_bytes_count());
 
-    serial_write(" | queued: ");
-    serial_write_dec(ps2_mouse_queued_count());
+serial_write(" | packets: ");
+serial_write_dec(ps2_mouse_packets_count());
 
-    serial_write("\n");
+serial_write(" | queued: ");
+serial_write_dec(ps2_mouse_queued_count());
+
+serial_write(" | status: ");
+serial_write_dec(interrupts_mouse_last_status());
+
+serial_write("\n");
 }
 
 if (now - last_clock_tick >= 100) {
