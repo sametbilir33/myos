@@ -8,6 +8,8 @@
 #include <gui/events.h>
 #include <interrupts.h>
 #include <pci.h>
+#include <xhci.h>
+#include <dma.h>
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -16,6 +18,19 @@ __attribute__((used, section(".limine_requests")))
 static volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST_ID,
     .revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST_ID,
+    .revision = 0
+};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST_ID,
+    .revision = 0,
+    .response = 0
 };
 
 __attribute__((used, section(".limine_requests_end")))
@@ -624,6 +639,44 @@ if (pci_find_xhci(&xhci)) {
     if (pci_enable_bus_mastering(&xhci)) {
         serial_write("[USB] PCI memory space and bus mastering enabled\n");
     }
+}
+
+if (hhdm_request.response != 0) {
+    uint64_t hhdm_offset = hhdm_request.response->offset;
+
+    serial_write("[xHCI] HHDM offset: ");
+    serial_write_hex(hhdm_offset);
+    serial_write("\n");
+
+    if (memmap_request.response != 0 &&
+        dma_init(
+            (struct limine_memmap_response *)
+                memmap_request.response,
+            hhdm_offset
+        )) {
+
+        uint64_t test_phys = 0;
+        void *test_virt = dma_alloc(4096, &test_phys);
+
+        if (test_virt) {
+            serial_write("[DMA] Test page virtual: ");
+            serial_write_hex((uintptr_t)test_virt);
+            serial_write("\n");
+
+            serial_write("[DMA] Test page physical: ");
+            serial_write_hex(test_phys);
+            serial_write("\n");
+        } else {
+            serial_write("[DMA] Test allocation failed\n");
+        }
+    } else {
+        serial_write("[DMA] Initialization failed\n");
+    }
+
+    /* Şimdilik denetleyici testine devam et. */
+    xhci_probe(xhci.bar0, hhdm_offset);
+} else {
+    serial_write("[xHCI] Limine HHDM response missing\n");
 }
 
     serial_write("[IRQ] IDT, PIC and PIT initialized\n");
