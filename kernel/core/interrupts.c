@@ -44,6 +44,13 @@ static struct idt_entry idt[256]
 
 static volatile uint64_t timer_ticks;
 
+static volatile uint64_t mouse_irq_count;
+
+uint64_t interrupts_mouse_irq_count(void)
+{
+    return mouse_irq_count;
+}
+
 static inline void outb(uint16_t port, uint8_t value)
 {
     __asm__ volatile ("outb %0, %1"
@@ -97,6 +104,8 @@ __attribute__((interrupt))
 static void mouse_irq_handler(struct interrupt_frame *frame)
 {
     (void)frame;
+
+    mouse_irq_count++;
 
     /*
      * IRQ12, ikinci PS/2 portundan geldiği için bu bayt

@@ -658,12 +658,22 @@ void kernel_main(void)
     gui_events_set_handler(handle_gui_event);
 
     interrupts_enable(mouse_available);
+
+    uint64_t last_mouse_irq_count = 0;
+
     serial_write("[IRQ] Interrupts enabled\n");
 
     uint8_t previous_buttons = 0;
     uint64_t last_clock_tick = 0;
 
     for (;;) {
+        uint64_t irq_count = interrupts_mouse_irq_count();
+
+    if (irq_count != last_mouse_irq_count) {
+        serial_write("[DEBUG] IRQ12 mouse interrupt received\n");
+        last_mouse_irq_count = irq_count;
+    }
+
         uint64_t now = interrupts_ticks();
 
 if (now - last_clock_tick >= 100) {
