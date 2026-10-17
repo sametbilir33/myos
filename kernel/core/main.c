@@ -7,6 +7,7 @@
 #include <gui/cursor.h>
 #include <gui/events.h>
 #include <interrupts.h>
+#include <pci.h>
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -615,6 +616,16 @@ void kernel_main(void)
 
     __asm__ volatile ("cli" ::: "memory");
     interrupts_init();
+    pci_init();
+
+    struct pci_device xhci;
+
+if (pci_find_xhci(&xhci)) {
+    if (pci_enable_bus_mastering(&xhci)) {
+        serial_write("[USB] PCI memory space and bus mastering enabled\n");
+    }
+}
+
     serial_write("[IRQ] IDT, PIC and PIT initialized\n");
 
     serial_write("\n[BOOT] MyOS desktop starting\n");
