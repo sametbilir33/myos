@@ -206,11 +206,20 @@ static void xhci_configure_controller(
     uint32_t hcsparams1
 ) {
     uint32_t max_slots = hcsparams1 & 0xFFu;
-
-    /* Operational registers. */
     mmio_write64(xhci_mmio, xhci_op + 0x30, dcbaa_phys);
-    mmio_write64(xhci_mmio, xhci_op + 0x18,
-                 command_ring_phys | 1u);
+
+    /* CRCR: önce düşük, sonra yüksek 32 bit. */
+    mmio_write32(
+        xhci_mmio,
+        xhci_op + 0x18,
+        (uint32_t)(command_ring_phys | 1u)
+    );
+
+    mmio_write32(
+        xhci_mmio,
+        xhci_op + 0x1C,
+        (uint32_t)(command_ring_phys >> 32)
+    );
 
     /* Enable the supported device slots. */
     mmio_write32(xhci_mmio, xhci_op + 0x38, max_slots);
@@ -234,14 +243,18 @@ static void xhci_configure_controller(
     serial_write("[xHCI] Event ring configured\n");
 }
 
-static bool xhci_test_command_ring(void)
+static bool xhci_submit_command(
+    uint64_t parameter,
+    uint32_t status,
+    uint32_t control,
+    uint32_t *completion_control
+)
 {
-    /* TRB 23: No-op Command */
     struct xhci_trb *trb = &command_ring[command_enqueue];
 
-    trb->parameter = 0;
-    trb->status = 0;
-    trb->control = (23u << 10) | command_cycle;
+    trb->parameter = parameter;
+    trb->status = status;
+    trb->control = control | command_cycle;
 
     uint64_t command_phys =
         command_ring_phys +
@@ -254,14 +267,21 @@ static bool xhci_test_command_ring(void)
     if (command_enqueue >= XHCI_TRBS_PER_RING - 1) {
         command_enqueue = 0;
         command_cycle ^= 1;
+
+        command_ring[XHCI_TRBS_PER_RING - 1].control =
+            (XHCI_TRB_TYPE_LINK << 10) |
+            (1u << 1) |
+            command_cycle;
+
+        __asm__ volatile ("mfence" ::: "memory");
     }
 
-    /* Doorbell 0: Host Controller Command Ring */
-    mmio_write32(xhci_mmio, xhci_doorbell, 0);
-
-    serial_write("[xHCI] No-op command submitted: ");
+    serial_write("[xHCI] Submit command TRB: ");
     serial_write_hex(command_phys);
     serial_write("\n");
+
+    /* Doorbell 0, Host Controller Command Ring. */
+    mmio_write32(xhci_mmio, xhci_doorbell, 0);
 
     uint32_t intr = xhci_runtime + 0x20;
 
@@ -269,13 +289,14 @@ static bool xhci_test_command_ring(void)
         volatile struct xhci_trb *event =
             &event_ring[event_dequeue];
 
-        uint32_t control = event->control;
+        uint32_t event_ctl = event->control;
 
-        if ((control & 1u) != event_cycle)
+        if ((event_ctl & 1u) != event_cycle)
             continue;
 
-        uint32_t type = (control >> 10) & 0x3Fu;
-        uint32_t status = event->status;
+        uint32_t type = (event_ctl >> 10) & 0x3Fu;
+        uint32_t event_status = event->status;
+        uint64_t event_parameter = event->parameter;
 
         event_dequeue++;
 
@@ -294,33 +315,143 @@ static bool xhci_test_command_ring(void)
             next_event_phys | 8u
         );
 
-        if (type != 33u) {
+        if (type != 33u)
             continue;
-        }
 
-        uint32_t completion_code = status >> 24;
+        uint32_t completion_code = event_status >> 24;
 
         serial_write("[xHCI] Command completion code: ");
         serial_write_dec(completion_code);
         serial_write("\n");
 
-        if (completion_code == 1u) {
-            serial_write("[xHCI] Command ring test PASSED\n");
-            return true;
-        }
+        if (completion_control != NULL)
+            *completion_control = event_ctl;
 
-        serial_write("[xHCI] Command ring test FAILED\n");
-        return false;
+        serial_write("[xHCI] Completed command pointer: ");
+        serial_write_hex(event_parameter);
+        serial_write("\n");
+
+        return completion_code == 1u;
     }
 
     serial_write("[xHCI] Command completion timed out\n");
     return false;
 }
 
+static bool xhci_test_command_ring(void)
+{
+    serial_write("[xHCI] Testing command ring with No-op\n");
+
+    if (!xhci_submit_command(
+            0,
+            0,
+            23u << 10,
+            NULL)) {
+        serial_write("[xHCI] Command ring test FAILED\n");
+        return false;
+    }
+
+    serial_write("[xHCI] Command ring test PASSED\n");
+    return true;
+}
+
+static bool xhci_reset_connected_port(uint32_t ports, uint8_t *port_id)
+{
+    const uint32_t portsc_change_bits = 0x7Fu << 17;
+
+    for (uint32_t i = 0; i < ports; i++) {
+        uint32_t offset = xhci_op + 0x400 + i * 0x10;
+        uint32_t portsc = mmio_read32(xhci_mmio, offset);
+
+        if ((portsc & 1u) == 0)
+            continue;
+
+        serial_write("[xHCI] Resetting connected port ");
+        serial_write_dec(i + 1);
+        serial_write("\n");
+
+        /*
+         * PORTSC change bits are write-one-to-clear.
+         * Clear them from our write value so we do not
+         * accidentally acknowledge unrelated changes.
+         */
+        uint32_t value =
+            portsc & ~(portsc_change_bits | (1u << 4) |
+                       (1u << 1) | (1u << 31));
+
+        /* USB2 port reset: PR, bit 4. */
+        mmio_write32(xhci_mmio, offset, value | (1u << 4));
+
+        if (!wait_register(
+                xhci_mmio,
+                offset,
+                1u << 4,
+                0)) {
+            serial_write("[xHCI] Port reset timed out\n");
+            return false;
+        }
+
+        portsc = mmio_read32(xhci_mmio, offset);
+
+        serial_write("[xHCI] PORTSC after reset: ");
+        serial_write_hex(portsc);
+        serial_write("\n");
+
+        if ((portsc & 1u) == 0) {
+            serial_write("[xHCI] Device disconnected during reset\n");
+            return false;
+        }
+
+        if ((portsc & (1u << 1)) == 0) {
+            serial_write("[xHCI] Port did not become enabled\n");
+            return false;
+        }
+
+        *port_id = (uint8_t)(i + 1);
+        serial_write("[xHCI] Port reset and enabled\n");
+        return true;
+    }
+
+    serial_write("[xHCI] No connected USB port found\n");
+    return false;
+}
+
+static bool xhci_enable_slot(uint8_t *slot_id)
+{
+    uint32_t completion_control = 0;
+
+    serial_write("[xHCI] Sending Enable Slot command\n");
+
+    /*
+     * Enable Slot command: TRB type 9.
+     * Slot Type is zero for the default slot type.
+     */
+    if (!xhci_submit_command(
+            0,
+            0,
+            9u << 10,
+            &completion_control)) {
+        serial_write("[xHCI] Enable Slot failed\n");
+        return false;
+    }
+
+    *slot_id = (uint8_t)(completion_control >> 24);
+
+    if (*slot_id == 0) {
+        serial_write("[xHCI] Controller returned invalid slot ID\n");
+        return false;
+    }
+
+    serial_write("[xHCI] Slot enabled, ID: ");
+    serial_write_dec(*slot_id);
+    serial_write("\n");
+
+    return true;
+}
+
 bool xhci_probe(uint64_t bar_phys, uint64_t hhdm_offset)
 {
-    if (bar_phys == 0 ||
-        bar_phys > UINT64_MAX - hhdm_offset) {
+    if (bar_phys == 0) {
         serial_write("[xHCI] Invalid BAR address\n");
         return false;
     }
@@ -428,6 +559,22 @@ bool xhci_probe(uint64_t bar_phys, uint64_t hhdm_offset)
     }
 
     uint32_t ports = (hcsparams1 >> 24) & 0xFFu;
+    uint8_t connected_port = 0;
+    uint8_t slot_id = 0;
+
+    if (!xhci_reset_connected_port(ports, &connected_port)) {
+        serial_write("[xHCI] USB port initialization failed\n");
+        return false;
+    }
+
+    serial_write("[xHCI] Connected USB port: ");
+    serial_write_dec(connected_port);
+    serial_write("\n");
+
+    if (!xhci_enable_slot(&slot_id)) {
+        serial_write("[xHCI] Cannot enable USB device slot\n");
+        return false;
+    }
 
     for (uint32_t i = 0; i < ports; i++) {
         uint32_t portsc_offset = xhci_op + 0x400 + i * 0x10;
