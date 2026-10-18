@@ -5,6 +5,7 @@
 #include <runtime/serial.h>
 #include <drivers/xhci.h>
 #include <memory/dma.h>
+#include <drivers/usb_hid_mouse.h>
 
 #define XHCI_TRBS_PER_RING 256u
 #define XHCI_TRB_TYPE_LINK 6u
@@ -1311,14 +1312,17 @@ bool xhci_mouse_read_packet(
             uint32_t transferred =
                 usb_mouse_packet_size - residual;
 
-            if (transferred >= 3) {
-                *buttons = usb_mouse_buffer[0] & 0x07u;
-                *dx = (int)(int8_t)usb_mouse_buffer[1];
-                *dy = (int)(int8_t)usb_mouse_buffer[2];
+            
+if (usb_hid_mouse_decode_boot_report(
+        usb_mouse_buffer,
+        (uint16_t)transferred,
+        dx,
+        dy,
+        buttons)) {
+    xhci_mouse_arm_transfer();
+    return true;
+}
 
-                xhci_mouse_arm_transfer();
-                return true;
-            }
         }
 
         if (!valid) {
