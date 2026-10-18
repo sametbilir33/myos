@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <limine.h>
+#include <boot/limine.h>
 
 bool dma_init(
     struct limine_memmap_response *memmap,

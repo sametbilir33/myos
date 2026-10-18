@@ -1,5 +1,5 @@
-#include <graphics.h>
-#include <font8x16.h>
+#include <graphics/graphics.h>
+#include <graphics/font8x16.h>
 
 static struct limine_framebuffer *framebuffer;
 static uint32_t screen_width;

@@ -1,14 +1,14 @@
 #include <stdint.h>
 #include <stdbool.h>
-#include <limine.h>
-#include <graphics.h>
-#include <serial.h>
+#include <boot/limine.h>
+#include <graphics/graphics.h>
+#include <runtime/serial.h>
 #include <gui/cursor.h>
 #include <gui/events.h>
-#include <interrupts.h>
-#include <pci.h>
-#include <xhci.h>
-#include <dma.h>
+#include <arch/x86_64/interrupts.h>
+#include <drivers/pci.h>
+#include <drivers/xhci.h>
+#include <memory/dma.h>
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;

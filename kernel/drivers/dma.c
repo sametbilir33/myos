@@ -1,9 +1,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <limine.h>
-#include <dma.h>
-#include <serial.h>
+#include <boot/limine.h>
+#include <memory/dma.h>
+#include <runtime/serial.h>
 
 #define PAGE_SIZE 4096
 #define MAX_REGIONS 128

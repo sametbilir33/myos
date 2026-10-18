@@ -1,5 +1,5 @@
 
-#include <interrupts.h>
+#include <arch/x86_64/interrupts.h>
 #include <stdint.h>
 #include <stdbool.h>
 

@@ -1,6 +1,6 @@
 
 #include <stdint.h>
-#include <graphics.h>
+#include <graphics/graphics.h>
 #include <gui/cursor.h>
 
 #define CURSOR_W 16

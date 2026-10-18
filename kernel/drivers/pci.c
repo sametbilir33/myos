@@ -1,6 +1,6 @@
 
-#include <pci.h>
-#include <serial.h>
+#include <drivers/pci.h>
+#include <runtime/serial.h>
 #include <stddef.h>
 
 #define PCI_CONFIG_ADDRESS 0xCF8

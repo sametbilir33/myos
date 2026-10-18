@@ -2,9 +2,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include <serial.h>
-#include <xhci.h>
-#include <dma.h>
+#include <runtime/serial.h>
+#include <drivers/xhci.h>
+#include <memory/dma.h>
 
 #define XHCI_TRBS_PER_RING 256u
 #define XHCI_TRB_TYPE_LINK 6u

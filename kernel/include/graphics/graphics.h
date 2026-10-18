@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <limine.h>
+#include <boot/limine.h>
 
 bool framebuffer_init(struct limine_framebuffer *fb);
 uint32_t framebuffer_width(void);
