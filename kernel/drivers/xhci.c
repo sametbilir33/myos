@@ -22,6 +22,114 @@ struct xhci_trb {
     uint32_t control;
 };
 
+#define XHCI_EVENT_QUEUE_SIZE 256u
+
+enum xhci_event_queue_id {
+    XHCI_QUEUE_COMMAND,
+    XHCI_QUEUE_CONTROL,
+    XHCI_QUEUE_INTERRUPT,
+    XHCI_QUEUE_COUNT
+};
+
+struct xhci_event_queue {
+    struct xhci_trb entries[XHCI_EVENT_QUEUE_SIZE];
+    uint16_t read;
+    uint16_t write;
+    uint16_t count;
+};
+
+static struct xhci_event_queue xhci_event_queues[XHCI_QUEUE_COUNT];
+
+static uint8_t interrupt_in_slot;
+static uint8_t interrupt_in_dci;
+
+static bool xhci_pop_event(struct xhci_trb *out);
+
+static bool xhci_event_queue_push(
+    enum xhci_event_queue_id id,
+    const struct xhci_trb *event
+)
+{
+    struct xhci_event_queue *queue = &xhci_event_queues[id];
+
+    if (queue->count == XHCI_EVENT_QUEUE_SIZE)
+        return false;
+
+    queue->entries[queue->write] = *event;
+    queue->write =
+        (uint16_t)((queue->write + 1u) % XHCI_EVENT_QUEUE_SIZE);
+    queue->count++;
+
+    return true;
+}
+
+static bool xhci_event_queue_pop(
+    enum xhci_event_queue_id id,
+    struct xhci_trb *out
+)
+{
+    struct xhci_event_queue *queue = &xhci_event_queues[id];
+
+    if (queue->count == 0)
+        return false;
+
+    *out = queue->entries[queue->read];
+    queue->read =
+        (uint16_t)((queue->read + 1u) % XHCI_EVENT_QUEUE_SIZE);
+    queue->count--;
+
+    return true;
+}
+
+static void xhci_dispatch_events(void)
+{
+    struct xhci_trb event;
+
+    while (xhci_pop_event(&event)) {
+        uint32_t type = (event.control >> 10) & 0x3Fu;
+        enum xhci_event_queue_id queue_id;
+
+        if (type == 33u) {
+            queue_id = XHCI_QUEUE_COMMAND;
+        } else if (type == 32u) {
+            uint8_t slot = (uint8_t)(event.control >> 24);
+            uint8_t endpoint =
+                (uint8_t)((event.control >> 16) & 0x1Fu);
+
+            if (slot == interrupt_in_slot &&
+                endpoint == interrupt_in_dci) {
+                queue_id = XHCI_QUEUE_INTERRUPT;
+            } else if (endpoint == 1u) {
+                queue_id = XHCI_QUEUE_CONTROL;
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
+        if (!xhci_event_queue_push(queue_id, &event)) {
+            serial_write("[xHCI] Software event queue full\n");
+        }
+    }
+}
+
+static bool xhci_wait_queued_event(
+    enum xhci_event_queue_id id,
+    struct xhci_trb *out,
+    uint32_t spin_limit
+)
+{
+    for (uint32_t i = 0; i < spin_limit; i++) {
+        xhci_dispatch_events();
+
+        if (xhci_event_queue_pop(id, out))
+            return true;
+    }
+
+    return false;
+}
+
 struct xhci_erst_entry {
     uint64_t base;
     uint32_t size;
@@ -66,11 +174,8 @@ static uint64_t interrupt_in_buffer_phys;
 static struct xhci_trb *interrupt_in_ring;
 static uint64_t interrupt_in_ring_phys;
 
-static uint16_t interrupt_in_enqueue;
+static uint8_t interrupt_in_enqueue;
 static uint8_t interrupt_in_cycle = 1;
-
-static uint8_t interrupt_in_slot;
-static uint8_t interrupt_in_dci;
 static uint16_t interrupt_in_packet_size;
 
 static bool interrupt_in_configured;
@@ -153,6 +258,12 @@ static bool xhci_allocate_rings(
     if (!command_ring || !event_ring || !erst || !dcbaa) {
         serial_write("[xHCI] Ring/DCBAA DMA allocation failed\n");
         return false;
+    }
+
+    for (uint32_t i = 0; i < XHCI_QUEUE_COUNT; i++) {
+        xhci_event_queues[i].read = 0;
+        xhci_event_queues[i].write = 0;
+        xhci_event_queues[i].count = 0;
     }
 
     /*
@@ -311,61 +422,33 @@ static bool xhci_submit_command(
     serial_write("\n");
 
     /* Doorbell 0, Host Controller Command Ring. */
+    
     mmio_write32(xhci_mmio, xhci_doorbell, 0);
 
-    uint32_t intr = xhci_runtime + 0x20;
+    struct xhci_trb event;
 
-    for (uint32_t i = 0; i < 10000000u; i++) {
-        volatile struct xhci_trb *event =
-            &event_ring[event_dequeue];
-
-        uint32_t event_ctl = event->control;
-
-        if ((event_ctl & 1u) != event_cycle)
-            continue;
-
-        uint32_t type = (event_ctl >> 10) & 0x3Fu;
-        uint32_t event_status = event->status;
-        uint64_t event_parameter = event->parameter;
-
-        event_dequeue++;
-
-        if (event_dequeue >= XHCI_TRBS_PER_RING) {
-            event_dequeue = 0;
-            event_cycle ^= 1;
-        }
-
-        uint64_t next_event_phys =
-            event_ring_phys +
-            (uint64_t)event_dequeue * sizeof(struct xhci_trb);
-
-        mmio_write64(
-            xhci_mmio,
-            intr + 0x18,
-            next_event_phys | 8u
-        );
-
-        if (type != 33u)
-            continue;
-
-        uint32_t completion_code = event_status >> 24;
-
-        serial_write("[xHCI] Command completion code: ");
-        serial_write_dec(completion_code);
-        serial_write("\n");
-
-        if (completion_control != NULL)
-            *completion_control = event_ctl;
-
-        serial_write("[xHCI] Completed command pointer: ");
-        serial_write_hex(event_parameter);
-        serial_write("\n");
-
-        return completion_code == 1u;
-    }
-
+if (!xhci_wait_queued_event(
+        XHCI_QUEUE_COMMAND,
+        &event,
+        10000000u)) {
     serial_write("[xHCI] Command completion timed out\n");
     return false;
+}
+
+uint32_t completion_code = event.status >> 24;
+
+serial_write("[xHCI] Command completion code: ");
+serial_write_dec(completion_code);
+serial_write("\n");
+
+if (completion_control != NULL)
+    *completion_control = event.control;
+
+serial_write("[xHCI] Completed command pointer: ");
+serial_write_hex(event.parameter);
+serial_write("\n");
+
+return completion_code == 1u;
 }
 
 static bool xhci_test_command_ring(void)
@@ -701,13 +784,12 @@ static bool xhci_wait_control_transfer(uint8_t slot_id)
     for (uint32_t i = 0; i < 10000000u; i++) {
         struct xhci_trb event;
 
-        if (!xhci_pop_event(&event))
+        if (!xhci_wait_queued_event(
+                XHCI_QUEUE_CONTROL,
+                &event,
+                1u)) {
             continue;
-
-        uint32_t type = (event.control >> 10) & 0x3Fu;
-
-        if (type != 32u)
-            continue;
+        }
 
         uint8_t event_slot =
             (uint8_t)(event.control >> 24);
@@ -715,7 +797,7 @@ static bool xhci_wait_control_transfer(uint8_t slot_id)
         uint8_t endpoint_id =
             (uint8_t)((event.control >> 16) & 0x1Fu);
 
-        if (event_slot != slot_id || endpoint_id != 1)
+        if (event_slot != slot_id || endpoint_id != 1u)
             continue;
 
         uint32_t code = event.status >> 24;
@@ -724,10 +806,6 @@ static bool xhci_wait_control_transfer(uint8_t slot_id)
         serial_write_dec(code);
         serial_write("\n");
 
-        /*
-         * 1  = Success
-         * 13 = Short Packet, which can be valid for IN requests.
-         */
         return code == 1u || code == 13u;
     }
 
@@ -1041,65 +1119,45 @@ bool xhci_interrupt_in_read(
         return false;
     }
 
-    for (uint32_t i = 0; i < 1000u; i++) {
-        struct xhci_trb event;
+    struct xhci_trb event;
 
-        if (!xhci_pop_event(&event))
-            return false;
+    xhci_dispatch_events();
 
-        uint32_t type = (event.control >> 10) & 0x3Fu;
+    if (!xhci_event_queue_pop(XHCI_QUEUE_INTERRUPT, &event))
+        return false;
 
-        if (type != 32u)
-            continue;
+    interrupt_in_transfer_pending = false;
 
-        uint8_t event_slot =
-            (uint8_t)(event.control >> 24);
+    uint32_t code = event.status >> 24;
+    uint32_t residual = event.status & 0x00FFFFFFu;
 
-        uint8_t endpoint_id =
-            (uint8_t)((event.control >> 16) & 0x1Fu);
+    bool valid = code == 1u || code == 13u;
+    bool report_ready = false;
 
-        if (event_slot != interrupt_in_slot ||
-            endpoint_id != interrupt_in_dci) {
-            continue;
+    if (valid && residual <= interrupt_in_packet_size) {
+        uint32_t transferred =
+            interrupt_in_packet_size - residual;
+
+        if (transferred > 0 && transferred <= capacity) {
+            for (uint32_t j = 0; j < transferred; j++)
+                report[j] = interrupt_in_buffer[j];
+
+            *length = (uint16_t)transferred;
+            report_ready = true;
         }
-
-        interrupt_in_transfer_pending = false;
-
-        uint32_t code = event.status >> 24;
-        uint32_t residual = event.status & 0x00FFFFFFu;
-
-        bool valid = code == 1u || code == 13u;
-        bool report_ready = false;
-
-        if (valid && residual <= interrupt_in_packet_size) {
-            uint32_t transferred =
-                interrupt_in_packet_size - residual;
-
-            if (transferred > 0 && transferred <= capacity) {
-                for (uint32_t j = 0; j < transferred; j++)
-                    report[j] = interrupt_in_buffer[j];
-
-                *length = (uint16_t)transferred;
-                report_ready = true;
-            }
-        }
-
-        if (!valid) {
-            serial_write("[xHCI] Interrupt-IN transfer error, code: ");
-            serial_write_dec(code);
-            serial_write("\n");
-        }
-
-        if (!xhci_interrupt_in_arm_transfer()) {
-            interrupt_in_ready = false;
-        }
-
-        return report_ready;
     }
 
-    return false;
-}
+    if (!valid) {
+        serial_write("[xHCI] Interrupt-IN transfer error, code: ");
+        serial_write_dec(code);
+        serial_write("\n");
+    }
 
+    if (!xhci_interrupt_in_arm_transfer())
+        interrupt_in_ready = false;
+
+    return report_ready;
+}
 
 bool xhci_probe(
     uint64_t bar_phys,

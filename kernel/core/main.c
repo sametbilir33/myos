@@ -619,11 +619,9 @@ void kernel_main(void)
 
     __asm__ volatile ("cli" ::: "memory");
     interrupts_init();
-    pci_init();
-
     
     struct pci_device xhci;
-    bool xhci_found = pci_find_xhci(&xhci);
+    bool xhci_found = pci_init(&xhci);
     bool xhci_enabled = false;
     bool usb_mouse_available = false;
 

@@ -23,7 +23,7 @@ struct pci_device {
     bool bar0_is_64bit;
 };
 
-void pci_init(void);
+bool pci_init(struct pci_device *out);
 bool pci_find_xhci(struct pci_device *out);
 bool pci_enable_bus_mastering(const struct pci_device *dev);
 

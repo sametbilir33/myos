@@ -166,45 +166,47 @@ bool pci_find_xhci(struct pci_device *out)
     return false;
 }
 
-void pci_init(void)
+bool pci_init(struct pci_device *out)
 {
+    if (out == NULL)
+        return false;
+
     serial_write("[PCI] Scanning PCI configuration space\n");
 
-    struct pci_device xhci;
-
-    if (!pci_find_xhci(&xhci)) {
+    if (!pci_find_xhci(out)) {
         serial_write("[PCI] No xHCI controller found\n");
         serial_write("[PCI] Check that QEMU has a USB controller\n");
-        return;
+        return false;
     }
 
     serial_write("[PCI] xHCI controller found at ");
-    serial_write_dec(xhci.bus);
+    serial_write_dec(out->bus);
     serial_write(":");
-    serial_write_dec(xhci.device);
+    serial_write_dec(out->device);
     serial_write(".");
-    serial_write_dec(xhci.function);
+    serial_write_dec(out->function);
     serial_write("\n");
 
     serial_write("[PCI] Vendor ID: ");
-    serial_write_hex(xhci.vendor_id);
+    serial_write_hex(out->vendor_id);
     serial_write(" Device ID: ");
-    serial_write_hex(xhci.device_id);
+    serial_write_hex(out->device_id);
     serial_write("\n");
 
     serial_write("[PCI] BAR0: ");
-    serial_write_hex(xhci.bar0);
+    serial_write_hex(out->bar0);
     serial_write("\n");
 
-    if (!xhci.bar0_is_mmio || !xhci.bar0_is_64bit ||
-        xhci.bar0 == 0) {
+    if (!out->bar0_is_mmio ||
+        !out->bar0_is_64bit ||
+        out->bar0 == 0) {
         serial_write("[PCI] Unsupported xHCI BAR0 configuration\n");
-        return;
+        return false;
     }
 
     serial_write("[PCI] xHCI MMIO BAR identified\n");
+    return true;
 }
-
 
 bool pci_enable_bus_mastering(const struct pci_device *dev)
 {

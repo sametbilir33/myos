@@ -1,5 +1,5 @@
-
 find_program(XORRISO_EXECUTABLE xorriso REQUIRED)
+find_program(CYGPATH_EXECUTABLE cygpath REQUIRED)
 
 set(LIMINE_DIR "${CMAKE_SOURCE_DIR}/boot/limine")
 set(LIMINE_CONFIG "${CMAKE_SOURCE_DIR}/boot/limine.conf")
@@ -54,12 +54,10 @@ add_custom_command(
     VERBATIM
 )
 
-add_custom_target(kernel ALL DEPENDS "${KERNEL_ELF}")
+add_custom_target(kernel DEPENDS "${KERNEL_ELF}")
 
 set(ISO_ROOT "${CMAKE_BINARY_DIR}/iso_root")
 set(ISO_FILE "${CMAKE_BINARY_DIR}/myos.iso")
-
-find_program(CYGPATH_EXECUTABLE cygpath REQUIRED)
 
 execute_process(
     COMMAND "${CYGPATH_EXECUTABLE}" -u "${ISO_ROOT}"
@@ -75,8 +73,9 @@ execute_process(
     COMMAND_ERROR_IS_FATAL ANY
 )
 
-add_custom_command(
-    OUTPUT "${ISO_FILE}"
+# Always rebuild the ISO on every cmake --build invocation.
+add_custom_target(iso ALL
+    COMMAND "${CMAKE_COMMAND}" -E rm -f "${ISO_FILE}"
 
     COMMAND "${CMAKE_COMMAND}" -E rm -rf "${ISO_ROOT}"
 
@@ -118,7 +117,8 @@ add_custom_command(
         "${ISO_ROOT_POSIX}"
         -o "${ISO_FILE_POSIX}"
 
-    COMMAND "${LIMINE_INSTALLER}" bios-install "${ISO_FILE}"
+    COMMAND "${LIMINE_INSTALLER}"
+        bios-install "${ISO_FILE}"
 
     DEPENDS
         kernel
@@ -130,5 +130,3 @@ add_custom_command(
 
     VERBATIM
 )
-
-add_custom_target(iso ALL DEPENDS "${ISO_FILE}")
