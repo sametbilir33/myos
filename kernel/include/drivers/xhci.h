@@ -1,16 +1,49 @@
-
 #ifndef MYOS_XHCI_H
 #define MYOS_XHCI_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
-bool xhci_probe(uint64_t bar_phys, uint64_t hhdm_offset);
+bool xhci_probe(
+    uint64_t bar_phys,
+    uint64_t hhdm_offset,
+    uint8_t *slot_id,
+    uint8_t *speed
+);
 
-bool xhci_mouse_read_report(
+bool xhci_control_transfer(
+    uint8_t slot_id,
+    uint8_t request_type,
+    uint8_t request,
+    uint16_t value,
+    uint16_t index,
+    uint16_t length,
+    uint64_t data_phys
+);
+
+bool xhci_interrupt_in_configure(
+    uint8_t slot_id,
+    uint8_t endpoint_address,
+    uint16_t max_packet_size,
+    uint8_t interval,
+    uint8_t speed,
+    uint8_t *buffer,
+    uint64_t buffer_phys
+);
+
+bool xhci_interrupt_in_start(void);
+
+bool xhci_interrupt_in_read(
     uint8_t *report,
     uint16_t capacity,
     uint16_t *length
 );
+
+struct usb_hid_mouse_endpoint_info {
+    uint8_t interface_number;
+    uint8_t endpoint_address;
+    uint16_t max_packet_size;
+    uint8_t interval;
+};
 
 #endif

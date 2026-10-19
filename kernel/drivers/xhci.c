@@ -5,7 +5,6 @@
 #include <runtime/serial.h>
 #include <drivers/xhci.h>
 #include <memory/dma.h>
-#include <drivers/usb_hid_mouse.h>
 
 #define XHCI_TRBS_PER_RING 256u
 #define XHCI_TRB_TYPE_LINK 6u
@@ -49,6 +48,12 @@ static uint64_t dcbaa_phys;
 static uint8_t *input_context;
 static uint64_t input_context_phys;
 
+static uint8_t *usb_descriptor_buffer;
+static uint64_t usb_descriptor_buffer_phys;
+
+static bool usb_mouse_ready;
+static bool usb_mouse_transfer_pending;
+
 static uint8_t *device_context;
 static uint64_t device_context_phys;
 
@@ -58,28 +63,25 @@ static uint16_t ep0_enqueue = 0;
 static uint8_t ep0_cycle = 1;
 static uint32_t xhci_context_size;
 
-static uint8_t *usb_descriptor_buffer;
-static uint64_t usb_descriptor_buffer_phys;
-
-static uint8_t *usb_mouse_buffer;
-static uint64_t usb_mouse_buffer_phys;
-
-static struct xhci_trb *usb_mouse_ring;
-static uint64_t usb_mouse_ring_phys;
-
-static uint16_t usb_mouse_enqueue;
-static uint8_t usb_mouse_cycle = 1;
-
-static uint8_t usb_mouse_slot;
-static uint8_t usb_mouse_dci;
-static uint8_t usb_mouse_interface;
-static uint8_t usb_mouse_packet_size;
-
-static bool usb_mouse_ready;
-static bool usb_mouse_transfer_pending;
-
 static uint16_t event_dequeue;
 static uint8_t event_cycle = 1;
+
+static uint8_t *interrupt_in_buffer;
+static uint64_t interrupt_in_buffer_phys;
+
+static struct xhci_trb *interrupt_in_ring;
+static uint64_t interrupt_in_ring_phys;
+
+static uint16_t interrupt_in_enqueue;
+static uint8_t interrupt_in_cycle = 1;
+
+static uint8_t interrupt_in_slot;
+static uint8_t interrupt_in_dci;
+static uint16_t interrupt_in_packet_size;
+
+static bool interrupt_in_configured;
+static bool interrupt_in_ready;
+static bool interrupt_in_transfer_pending;
 
 static uint16_t command_enqueue;
 static uint8_t command_cycle = 1;
@@ -485,8 +487,13 @@ static bool xhci_enable_slot(uint8_t *slot_id)
 
 static bool xhci_prepare_and_address_device(
     uint8_t port_id,
-    uint8_t slot_id
+    uint8_t slot_id,
+    uint8_t *out_slot_id,
+    uint8_t *out_speed
 ) {
+if (out_slot_id == NULL || out_speed == NULL)
+    return false;
+
     uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
 
     /* HCCPARAMS1.CSZ: 0 = 32-byte contexts, 1 = 64-byte contexts. */
@@ -617,6 +624,11 @@ static bool xhci_prepare_and_address_device(
         return false;
     }
 
+uint32_t *slot_context = (uint32_t *)device_context;
+
+    *out_slot_id = slot_id;
+    *out_speed = (uint8_t)((slot_context[0] >> 20) & 0x0Fu);
+
     serial_write("[xHCI] USB device addressed successfully\n");
     return true;
 }
@@ -728,7 +740,7 @@ static bool xhci_wait_control_transfer(uint8_t slot_id)
     return false;
 }
 
-static bool xhci_control_transfer(
+bool xhci_control_transfer(
     uint8_t slot_id,
     uint8_t request_type,
     uint8_t request,
@@ -831,48 +843,45 @@ static bool xhci_get_descriptor(
     );
 }
 
-static void xhci_mouse_push_trb(
+static void xhci_interrupt_in_push_trb(
     uint64_t parameter,
     uint32_t status,
     uint32_t control
 )
 {
     struct xhci_trb *trb =
-        &usb_mouse_ring[usb_mouse_enqueue];
+        &interrupt_in_ring[interrupt_in_enqueue];
 
     trb->parameter = parameter;
     trb->status = status;
-    trb->control = control | usb_mouse_cycle;
+    trb->control = control | interrupt_in_cycle;
 
     __asm__ volatile ("mfence" ::: "memory");
 
-    usb_mouse_enqueue++;
+    interrupt_in_enqueue++;
 
-    if (usb_mouse_enqueue >= XHCI_TRBS_PER_RING - 1) {
-        usb_mouse_enqueue = 0;
+    if (interrupt_in_enqueue >= XHCI_TRBS_PER_RING - 1) {
+        interrupt_in_enqueue = 0;
 
-        usb_mouse_ring[XHCI_TRBS_PER_RING - 1].control =
+        interrupt_in_ring[XHCI_TRBS_PER_RING - 1].control =
             (XHCI_TRB_TYPE_LINK << 10) |
             (1u << 1) |
-            usb_mouse_cycle;
+            interrupt_in_cycle;
 
         __asm__ volatile ("mfence" ::: "memory");
 
-        usb_mouse_cycle ^= 1;
+        interrupt_in_cycle ^= 1;
     }
 }
 
-static bool xhci_mouse_arm_transfer(void)
+static bool xhci_interrupt_in_arm_transfer(void)
 {
-    if (usb_mouse_transfer_pending)
+    if (interrupt_in_transfer_pending)
         return true;
 
-    /*
-     * Normal TRB, interrupt-IN endpoint, IOC enabled.
-     */
-    xhci_mouse_push_trb(
-        usb_mouse_buffer_phys,
-        usb_mouse_packet_size,
+    xhci_interrupt_in_push_trb(
+        interrupt_in_buffer_phys,
+        interrupt_in_packet_size,
         (1u << 10) |
         (1u << 5)
     );
@@ -881,70 +890,66 @@ static bool xhci_mouse_arm_transfer(void)
 
     mmio_write32(
         xhci_mmio,
-        xhci_doorbell + (uint32_t)usb_mouse_slot * 4u,
-        usb_mouse_dci
+        xhci_doorbell + (uint32_t)interrupt_in_slot * 4u,
+        interrupt_in_dci
     );
 
-    usb_mouse_transfer_pending = true;
+    interrupt_in_transfer_pending = true;
     return true;
 }
 
-static bool xhci_configure_mouse_endpoint(
+
+bool xhci_interrupt_in_configure(
     uint8_t slot_id,
-    uint8_t interface_number,
     uint8_t endpoint_address,
     uint16_t max_packet_size,
     uint8_t interval,
-    uint8_t speed
+    uint8_t speed,
+    uint8_t *buffer,
+    uint64_t buffer_phys
 )
 {
     uint8_t endpoint_number = endpoint_address & 0x0Fu;
 
-    if (endpoint_number == 0 || endpoint_number > 15)
+    if (endpoint_number == 0 ||
+        endpoint_number > 15 ||
+        (endpoint_address & 0x80u) == 0 ||
+        max_packet_size < 3 ||
+        max_packet_size > 255 ||
+        buffer == NULL ||
+        buffer_phys == 0) {
         return false;
+    }
 
-    if ((endpoint_address & 0x80u) == 0)
-        return false;
+    interrupt_in_dci = (uint8_t)(endpoint_number * 2u + 1u);
+    interrupt_in_slot = slot_id;
+    interrupt_in_packet_size = max_packet_size;
+    interrupt_in_buffer = buffer;
+    interrupt_in_buffer_phys = buffer_phys;
 
-    usb_mouse_dci = (uint8_t)(endpoint_number * 2u + 1u);
-    usb_mouse_slot = slot_id;
-    usb_mouse_interface = interface_number;
-    usb_mouse_packet_size = (uint8_t)max_packet_size;
-
-    usb_mouse_ring = dma_alloc(
+    interrupt_in_ring = dma_alloc(
         XHCI_TRBS_PER_RING * sizeof(struct xhci_trb),
-        &usb_mouse_ring_phys
+        &interrupt_in_ring_phys
     );
 
-    usb_mouse_buffer = dma_alloc(
-        4096,
-        &usb_mouse_buffer_phys
-    );
-
-    if (!usb_mouse_ring || !usb_mouse_buffer) {
-        serial_write("[USB] Interrupt endpoint DMA allocation failed\n");
+    if (interrupt_in_ring == NULL) {
+        serial_write("[xHCI] Interrupt endpoint ring allocation failed\n");
         return false;
     }
 
     struct xhci_trb *link =
-        &usb_mouse_ring[XHCI_TRBS_PER_RING - 1];
+        &interrupt_in_ring[XHCI_TRBS_PER_RING - 1];
 
-    link->parameter = usb_mouse_ring_phys;
+    link->parameter = interrupt_in_ring_phys;
     link->status = 0;
     link->control =
         (XHCI_TRB_TYPE_LINK << 10) |
         (1u << 1) |
         1u;
 
-    usb_mouse_enqueue = 0;
-    usb_mouse_cycle = 1;
+    interrupt_in_enqueue = 0;
+    interrupt_in_cycle = 1;
 
-    /*
-     * Rebuild an Input Context for Configure Endpoint.
-     * Context 0 = Input Control Context.
-     * Context 1 = Slot Context.
-     * Context (DCI + 1) = requested endpoint context.
-     */
     uint32_t *input_words = (uint32_t *)input_context;
 
     for (uint32_t i = 0;
@@ -964,41 +969,24 @@ static bool xhci_configure_mouse_endpoint(
         slot_input[i] = slot_output[i];
     }
 
-    /*
-     * Slot Context Context Entries = highest enabled DCI.
-     * Preserve the other slot fields.
-     */
     slot_input[0] =
         (slot_input[0] & ~(0x1Fu << 27)) |
-        ((uint32_t)usb_mouse_dci << 27);
+        ((uint32_t)interrupt_in_dci << 27);
 
-    /*
-     * Add Slot Context and this endpoint context.
-     * Add Context flags are in Input Control Context DWORD 1.
-     */
     input_words[1] =
         (1u << 0) |
-        (1u << usb_mouse_dci);
+        (1u << interrupt_in_dci);
 
     uint32_t *ep_context =
         (uint32_t *)(input_context +
-                     ((uint32_t)usb_mouse_dci + 1u) *
+                     ((uint32_t)interrupt_in_dci + 1u) *
                      xhci_context_size);
 
-    /*
-     * For High-Speed and SuperSpeed interrupt endpoints,
-     * xHCI Interval = bInterval - 1.
-     * The QEMU mouse in this setup enumerates at High Speed.
-     */
-    uint32_t xhci_interval = 0;
+    uint32_t xhci_interval;
 
     if (speed == 3u || speed == 4u) {
         xhci_interval = interval ? (uint32_t)interval - 1u : 0u;
     } else {
-        /*
-         * Full/Low-Speed interrupt intervals are expressed in ms.
-         * Convert to the nearest supported xHCI interval.
-         */
         uint32_t ms = interval ? interval : 1u;
         xhci_interval = 3u;
 
@@ -1013,42 +1001,47 @@ static bool xhci_configure_mouse_endpoint(
 
     ep_context[0] = xhci_interval << 16;
 
-    /*
-     * CErr = 3, Endpoint Type = 7 (Interrupt IN),
-     * Max Packet Size in bits 31:16.
-     */
     ep_context[1] =
         (3u << 1) |
         (7u << 3) |
         ((uint32_t)max_packet_size << 16);
 
-    uint64_t *dequeue =
-        (uint64_t *)&ep_context[2];
+    uint64_t *dequeue = (uint64_t *)&ep_context[2];
+    *dequeue = interrupt_in_ring_phys | 1u;
 
-    *dequeue = usb_mouse_ring_phys | 1u;
-
-    /*
-     * Average TRB Length and Max ESIT Payload.
-     */
     ep_context[4] =
         (uint32_t)max_packet_size |
         ((uint32_t)max_packet_size << 16);
 
     __asm__ volatile ("mfence" ::: "memory");
 
-    serial_write("[USB] Configuring interrupt endpoint, DCI: ");
-    serial_write_dec(usb_mouse_dci);
+    serial_write("[xHCI] Configuring interrupt-IN endpoint, DCI: ");
+    serial_write_dec(interrupt_in_dci);
     serial_write("\n");
 
-    /*
-     * Configure Endpoint command, TRB type = 12.
-     */
     if (!xhci_submit_command(
             input_context_phys,
             0,
             (12u << 10) | ((uint32_t)slot_id << 24),
             NULL)) {
-        serial_write("[USB] Configure Endpoint command failed\n");
+        serial_write("[xHCI] Configure Endpoint command failed\n");
+        return false;
+    }
+
+    interrupt_in_configured = true;
+    return true;
+}
+
+bool xhci_interrupt_in_start(void)
+{
+    if (!interrupt_in_configured)
+        return false;
+
+    interrupt_in_transfer_pending = false;
+    interrupt_in_ready = true;
+
+    if (!xhci_interrupt_in_arm_transfer()) {
+        interrupt_in_ready = false;
         return false;
     }
 
@@ -1214,7 +1207,8 @@ serial_write("\n");
 }
 
 
-bool xhci_mouse_read_report(
+
+bool xhci_interrupt_in_read(
     uint8_t *report,
     uint16_t capacity,
     uint16_t *length
@@ -1225,16 +1219,12 @@ bool xhci_mouse_read_report(
 
     *length = 0;
 
-    if (!usb_mouse_ready ||
+    if (!interrupt_in_ready ||
         report == NULL ||
         capacity == 0) {
         return false;
     }
 
-    /*
-     * The controller runs the transfer asynchronously.
-     * This function only retrieves the completed raw report.
-     */
     for (uint32_t i = 0; i < 1000u; i++) {
         struct xhci_trb event;
 
@@ -1252,12 +1242,12 @@ bool xhci_mouse_read_report(
         uint8_t endpoint_id =
             (uint8_t)((event.control >> 16) & 0x1Fu);
 
-        if (event_slot != usb_mouse_slot ||
-            endpoint_id != usb_mouse_dci) {
+        if (event_slot != interrupt_in_slot ||
+            endpoint_id != interrupt_in_dci) {
             continue;
         }
 
-        usb_mouse_transfer_pending = false;
+        interrupt_in_transfer_pending = false;
 
         uint32_t code = event.status >> 24;
         uint32_t residual = event.status & 0x00FFFFFFu;
@@ -1265,13 +1255,13 @@ bool xhci_mouse_read_report(
         bool valid = code == 1u || code == 13u;
         bool report_ready = false;
 
-        if (valid && residual <= usb_mouse_packet_size) {
+        if (valid && residual <= interrupt_in_packet_size) {
             uint32_t transferred =
-                usb_mouse_packet_size - residual;
+                interrupt_in_packet_size - residual;
 
             if (transferred > 0 && transferred <= capacity) {
                 for (uint32_t j = 0; j < transferred; j++)
-                    report[j] = usb_mouse_buffer[j];
+                    report[j] = interrupt_in_buffer[j];
 
                 *length = (uint16_t)transferred;
                 report_ready = true;
@@ -1279,15 +1269,14 @@ bool xhci_mouse_read_report(
         }
 
         if (!valid) {
-            serial_write("[USB] Mouse transfer error, code: ");
+            serial_write("[xHCI] Interrupt-IN transfer error, code: ");
             serial_write_dec(code);
             serial_write("\n");
         }
 
-        /*
-         * Re-arm the asynchronous transfer before returning.
-         */
-        xhci_mouse_arm_transfer();
+        if (!xhci_interrupt_in_arm_transfer()) {
+            interrupt_in_ready = false;
+        }
 
         return report_ready;
     }
@@ -1296,8 +1285,16 @@ bool xhci_mouse_read_report(
 }
 
 
-bool xhci_probe(uint64_t bar_phys, uint64_t hhdm_offset)
+bool xhci_probe(
+    uint64_t bar_phys,
+    uint64_t hhdm_offset,
+    uint8_t *out_slot_id,
+    uint8_t *out_speed
+)
 {
+    if (out_slot_id == NULL || out_speed == NULL)
+    return false;
+
     if (bar_phys == 0) {
         serial_write("[xHCI] Invalid BAR address\n");
         return false;
@@ -1423,15 +1420,20 @@ bool xhci_probe(uint64_t bar_phys, uint64_t hhdm_offset)
         return false;
     }
 
-    if (!xhci_prepare_and_address_device(connected_port, slot_id)) {
+    uint8_t addressed_slot_id = 0;
+uint8_t addressed_speed = 0;
+
+if (!xhci_prepare_and_address_device(
+        connected_port,
+        slot_id,
+        &addressed_slot_id,
+        &addressed_speed)) {
     serial_write("[xHCI] USB device addressing failed\n");
     return false;
 }
 
-if (!xhci_initialize_hid_mouse(slot_id)) {
-    serial_write("[USB] HID mouse initialization failed\n");
-    return false;
-}
+*out_slot_id = addressed_slot_id;
+*out_speed = addressed_speed;
 
     for (uint32_t i = 0; i < ports; i++) {
         uint32_t portsc_offset = xhci_op + 0x400 + i * 0x10;

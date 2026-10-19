@@ -629,8 +629,20 @@ void kernel_main(void)
         xhci_enabled = pci_enable_bus_mastering(&xhci);
 
         if (xhci_enabled) {
-            serial_write("[USB] PCI memory space and bus mastering enabled\n");
-        } else {
+    uint8_t usb_slot_id = 0;
+    uint8_t usb_speed = 0;
+
+    if (xhci_probe(
+            xhci.bar0,
+            hhdm_offset,
+            &usb_slot_id,
+            &usb_speed)) {
+            usb_mouse_available = usb_hid_mouse_init(
+            usb_slot_id,
+            usb_speed
+        );
+    }
+} else {
             serial_write("[USB] Failed to enable PCI bus mastering\n");
         }
     }
