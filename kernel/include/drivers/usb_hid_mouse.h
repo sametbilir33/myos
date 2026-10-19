@@ -13,4 +13,10 @@ bool usb_hid_mouse_decode_boot_report(
     uint8_t *buttons
 );
 
+bool usb_hid_mouse_read_packet(
+    int *dx,
+    int *dy,
+    uint8_t *buttons
+);
+
 #endif

@@ -1,5 +1,6 @@
 
 #include <drivers/usb_hid_mouse.h>
+#include <drivers/xhci.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -37,4 +38,36 @@ bool usb_hid_mouse_decode_boot_report(
     *dy = (int)(int8_t)report[2];
 
     return true;
+}
+
+
+bool usb_hid_mouse_read_packet(
+    int *dx,
+    int *dy,
+    uint8_t *buttons
+)
+{
+    uint8_t report[255];
+    uint16_t length = 0;
+
+    if (dx == NULL ||
+        dy == NULL ||
+        buttons == NULL) {
+        return false;
+    }
+
+    if (!xhci_mouse_read_report(
+            report,
+            sizeof(report),
+            &length)) {
+        return false;
+    }
+
+    return usb_hid_mouse_decode_boot_report(
+        report,
+        length,
+        dx,
+        dy,
+        buttons
+    );
 }

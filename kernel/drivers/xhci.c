@@ -1266,18 +1266,27 @@ static bool xhci_initialize_hid_mouse(uint8_t slot_id)
     return true;
 }
 
-bool xhci_mouse_read_packet(
-    int *dx,
-    int *dy,
-    uint8_t *buttons
+
+bool xhci_mouse_read_report(
+    uint8_t *report,
+    uint16_t capacity,
+    uint16_t *length
 )
 {
-    if (!usb_mouse_ready || !dx || !dy || !buttons)
+    if (length == NULL)
         return false;
 
+    *length = 0;
+
+    if (!usb_mouse_ready ||
+        report == NULL ||
+        capacity == 0) {
+        return false;
+    }
+
     /*
-     * This function is polled by the desktop loop.
      * The controller runs the transfer asynchronously.
+     * This function only retrieves the completed raw report.
      */
     for (uint32_t i = 0; i < 1000u; i++) {
         struct xhci_trb event;
@@ -1307,22 +1316,19 @@ bool xhci_mouse_read_packet(
         uint32_t residual = event.status & 0x00FFFFFFu;
 
         bool valid = code == 1u || code == 13u;
+        bool report_ready = false;
 
         if (valid && residual <= usb_mouse_packet_size) {
             uint32_t transferred =
                 usb_mouse_packet_size - residual;
 
-            
-if (usb_hid_mouse_decode_boot_report(
-        usb_mouse_buffer,
-        (uint16_t)transferred,
-        dx,
-        dy,
-        buttons)) {
-    xhci_mouse_arm_transfer();
-    return true;
-}
+            if (transferred > 0 && transferred <= capacity) {
+                for (uint32_t j = 0; j < transferred; j++)
+                    report[j] = usb_mouse_buffer[j];
 
+                *length = (uint16_t)transferred;
+                report_ready = true;
+            }
         }
 
         if (!valid) {
@@ -1331,12 +1337,17 @@ if (usb_hid_mouse_decode_boot_report(
             serial_write("\n");
         }
 
+        /*
+         * Re-arm the asynchronous transfer before returning.
+         */
         xhci_mouse_arm_transfer();
-        return false;
+
+        return report_ready;
     }
 
     return false;
 }
+
 
 bool xhci_probe(uint64_t bar_phys, uint64_t hhdm_offset)
 {

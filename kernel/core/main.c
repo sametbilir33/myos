@@ -9,6 +9,7 @@
 #include <drivers/pci.h>
 #include <drivers/xhci.h>
 #include <memory/dma.h>
+#include <drivers/usb_hid_mouse.h>
 
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -749,7 +750,7 @@ void kernel_main(void)
         uint8_t buttons = previous_buttons;
         bool got_packet = false;
 
-        got_packet = xhci_mouse_read_packet(&dx, &dy, &buttons);
+        got_packet = usb_hid_mouse_read_packet(&dx, &dy, &buttons);
 
         if (!got_packet) {
             __asm__ volatile ("sti\n\t"
