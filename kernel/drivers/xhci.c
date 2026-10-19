@@ -1129,81 +1129,28 @@ static bool xhci_initialize_hid_mouse(uint8_t slot_id)
         return false;
     }
 
-    uint8_t interface_number = 0;
-    uint8_t endpoint_address = 0;
-    uint8_t endpoint_interval = 0;
-    uint16_t endpoint_packet_size = 0;
-    bool matching_interface = false;
-    bool found_mouse_endpoint = false;
+    
+struct usb_hid_mouse_endpoint_info endpoint_info = {0};
 
-    for (uint32_t offset = 0; offset + 2 <= total_length;) {
-        uint8_t descriptor_length = usb_descriptor_buffer[offset];
-        uint8_t descriptor_type = usb_descriptor_buffer[offset + 1];
+if (!usb_hid_mouse_find_boot_endpoint(
+        usb_descriptor_buffer,
+        total_length,
+        &endpoint_info)) {
+    serial_write(
+        "[USB] HID Boot Mouse interrupt-IN endpoint not found\n"
+    );
+    return false;
+}
 
-        if (descriptor_length < 2 ||
-            offset + descriptor_length > total_length) {
-            serial_write("[USB] Malformed configuration descriptor\n");
-            return false;
-        }
-
-        if (descriptor_type == 4 && descriptor_length >= 9) {
-            /*
-             * Interface descriptor:
-             * Class = 3 (HID), Subclass = 1 (Boot),
-             * Protocol = 2 (Mouse).
-             */
-            matching_interface =
-                usb_descriptor_buffer[offset + 5] == 3 &&
-                usb_descriptor_buffer[offset + 6] == 1 &&
-                usb_descriptor_buffer[offset + 7] == 2;
-
-            if (matching_interface) {
-                interface_number = usb_descriptor_buffer[offset + 2];
-
-                serial_write("[USB] HID Boot Mouse interface: ");
-                serial_write_dec(interface_number);
-                serial_write("\n");
-            }
-        } else if (descriptor_type == 5 &&
-                   descriptor_length >= 7 &&
-                   matching_interface) {
-            uint8_t address = usb_descriptor_buffer[offset + 2];
-            uint8_t attributes = usb_descriptor_buffer[offset + 3];
-
-            uint16_t packet_size =
-                (uint16_t)usb_descriptor_buffer[offset + 4] |
-                ((uint16_t)usb_descriptor_buffer[offset + 5] << 8);
-
-            packet_size &= 0x07FFu;
-
-            bool is_in = (address & 0x80u) != 0;
-            bool is_interrupt = (attributes & 0x03u) == 3u;
-
-            if (is_in && is_interrupt && packet_size >= 3 &&
-                packet_size <= 255) {
-                endpoint_address = address;
-                endpoint_packet_size = packet_size;
-                endpoint_interval = usb_descriptor_buffer[offset + 6];
-                found_mouse_endpoint = true;
-                break;
-            }
-        }
-
-        offset += descriptor_length;
-    }
-
-    if (!found_mouse_endpoint) {
-        serial_write("[USB] HID Boot Mouse interrupt-IN endpoint not found\n");
-        return false;
-    }
-
-    serial_write("[USB] Interrupt endpoint address: ");
-    serial_write_hex(endpoint_address);
-    serial_write("\n[USB] Interrupt packet size: ");
-    serial_write_dec(endpoint_packet_size);
-    serial_write("\n[USB] Interrupt interval: ");
-    serial_write_dec(endpoint_interval);
-    serial_write("\n");
+serial_write("[USB] HID Boot Mouse interface: ");
+serial_write_dec(endpoint_info.interface_number);
+serial_write("\n[USB] Interrupt endpoint address: ");
+serial_write_hex(endpoint_info.endpoint_address);
+serial_write("\n[USB] Interrupt packet size: ");
+serial_write_dec(endpoint_info.max_packet_size);
+serial_write("\n[USB] Interrupt interval: ");
+serial_write_dec(endpoint_info.interval);
+serial_write("\n");
 
     /*
      * The device context's Slot Context contains the port speed.
@@ -1212,14 +1159,14 @@ static bool xhci_initialize_hid_mouse(uint8_t slot_id)
     uint32_t speed = (slot_context[0] >> 20) & 0xFu;
 
     if (!xhci_configure_mouse_endpoint(
-            slot_id,
-            interface_number,
-            endpoint_address,
-            endpoint_packet_size,
-            endpoint_interval,
-            (uint8_t)speed)) {
-        return false;
-    }
+        slot_id,
+        endpoint_info.interface_number,
+        endpoint_info.endpoint_address,
+        endpoint_info.max_packet_size,
+        endpoint_info.interval,
+        (uint8_t)speed)) {
+    return false;
+}
 
     /*
      * SET_CONFIGURATION, after successful Configure Endpoint.
@@ -1245,7 +1192,7 @@ static bool xhci_initialize_hid_mouse(uint8_t slot_id)
         0x21,
         0x0B,
         0,
-        usb_mouse_interface,
+        endpoint_info.interface_number,
         0,
         0)) {
         serial_write("[USB] SET_PROTOCOL Boot failed\n");
