@@ -621,35 +621,29 @@ void kernel_main(void)
     interrupts_init();
     pci_init();
 
+    
     struct pci_device xhci;
     bool xhci_found = pci_find_xhci(&xhci);
     bool xhci_enabled = false;
+    bool usb_mouse_available = false;
 
     if (xhci_found) {
         xhci_enabled = pci_enable_bus_mastering(&xhci);
 
-        if (xhci_enabled) {
-    uint8_t usb_slot_id = 0;
-    uint8_t usb_speed = 0;
-
-    if (xhci_probe(
-            xhci.bar0,
-            hhdm_offset,
-            &usb_slot_id,
-            &usb_speed)) {
-            usb_mouse_available = usb_hid_mouse_init(
-            usb_slot_id,
-            usb_speed
-        );
-    }
-} else {
-            serial_write("[USB] Failed to enable PCI bus mastering\n");
+        if (!xhci_enabled) {
+            serial_write(
+                "[USB] Failed to enable PCI bus mastering\n"
+            );
+        } else {
+            serial_write(
+                "[USB] PCI memory space and bus mastering enabled\n"
+            );
         }
+    } else {
+        serial_write("[USB] xHCI controller not found\n");
     }
 
-    bool usb_mouse_available = false;
-
-    if (hhdm_request.response != 0) {
+    if (hhdm_request.response != NULL) {
         uint64_t hhdm_offset = hhdm_request.response->offset;
 
         serial_write("[xHCI] HHDM offset: ");
@@ -658,7 +652,7 @@ void kernel_main(void)
 
         bool dma_ready = false;
 
-        if (memmap_request.response != 0) {
+        if (memmap_request.response != NULL) {
             dma_ready = dma_init(
                 (struct limine_memmap_response *)
                     memmap_request.response,
@@ -666,11 +660,13 @@ void kernel_main(void)
             );
         }
 
-        if (dma_ready) {
+        if (!dma_ready) {
+            serial_write("[DMA] Initialization failed\n");
+        } else {
             uint64_t test_phys = 0;
             void *test_virt = dma_alloc(4096, &test_phys);
 
-            if (test_virt) {
+            if (test_virt != NULL) {
                 serial_write("[DMA] Test page virtual: ");
                 serial_write_hex((uintptr_t)test_virt);
                 serial_write("\n");
@@ -683,10 +679,20 @@ void kernel_main(void)
             }
 
             if (xhci_enabled) {
-                usb_mouse_available = xhci_probe(xhci.bar0, hhdm_offset);
+                uint8_t usb_slot_id = 0;
+                uint8_t usb_speed = 0;
+
+                if (xhci_probe(
+                        xhci.bar0,
+                        hhdm_offset,
+                        &usb_slot_id,
+                        &usb_speed)) {
+                    usb_mouse_available = usb_hid_mouse_init(
+                        usb_slot_id,
+                        usb_speed
+                    );
+                }
             }
-        } else {
-            serial_write("[DMA] Initialization failed\n");
         }
     } else {
         serial_write("[xHCI] Limine HHDM response missing\n");
