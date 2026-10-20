@@ -56,6 +56,43 @@ struct xhci_event_queue {
     uint16_t count;
 };
 
+#define XHCI_MAX_DEVICE_SLOTS 256u
+
+struct xhci_device_state {
+    bool addressed;
+
+    uint8_t speed;
+    uint8_t port_id;
+
+    uint8_t *input_context;
+    uint64_t input_context_phys;
+
+    uint8_t *device_context;
+    uint64_t device_context_phys;
+
+    struct xhci_trb *ep0_ring;
+    uint64_t ep0_ring_phys;
+    uint16_t ep0_enqueue;
+    uint8_t ep0_cycle;
+
+    struct xhci_trb *interrupt_ring;
+    uint64_t interrupt_ring_phys;
+    uint16_t interrupt_enqueue;
+    uint8_t interrupt_cycle;
+
+    uint8_t *interrupt_buffer;
+    uint64_t interrupt_buffer_phys;
+    uint16_t interrupt_packet_size;
+    uint8_t interrupt_dci;
+
+    bool interrupt_configured;
+    bool interrupt_ready;
+    bool interrupt_transfer_pending;
+};
+
+static struct xhci_device_state
+    xhci_devices[XHCI_MAX_DEVICE_SLOTS];
+
 /* Port numarasına göre Supported Protocol major version. */
 static uint8_t xhci_port_major[256];
 

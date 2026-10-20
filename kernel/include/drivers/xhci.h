@@ -31,9 +31,10 @@ bool xhci_interrupt_in_configure(
     uint64_t buffer_phys
 );
 
-bool xhci_interrupt_in_start(void);
+bool xhci_interrupt_in_start(uint8_t slot_id);
 
 bool xhci_interrupt_in_read(
+    uint8_t slot_id,
     uint8_t *report,
     uint16_t capacity,
     uint16_t *length
