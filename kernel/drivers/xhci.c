@@ -16,6 +16,24 @@
 #define USBSTS_HALTED    (1u << 0)
 #define USBSTS_NOT_READY (1u << 11)
 
+#define XHCI_PORTSC_CCS       (1u << 0)
+#define XHCI_PORTSC_PED       (1u << 1)
+#define XHCI_PORTSC_PR        (1u << 4)
+#define XHCI_PORTSC_PP        (1u << 9)
+#define XHCI_PORTSC_SPEED     (0xFu << 10)
+
+#define XHCI_PORTSC_CSC       (1u << 17)
+#define XHCI_PORTSC_PEC       (1u << 18)
+#define XHCI_PORTSC_WRC       (1u << 19)
+#define XHCI_PORTSC_OCC       (1u << 20)
+#define XHCI_PORTSC_PRC       (1u << 21)
+#define XHCI_PORTSC_PLC       (1u << 22)
+#define XHCI_PORTSC_CEC       (1u << 23)
+
+#define XHCI_PORTSC_CHANGE_MASK (0x7Fu << 17)
+#define XHCI_PORTSC_WPR       (1u << 31)
+#define XHCI_PORTSC_LWS       (1u << 16)
+
 struct xhci_trb {
     uint64_t parameter;
     uint32_t status;
@@ -37,6 +55,9 @@ struct xhci_event_queue {
     uint16_t write;
     uint16_t count;
 };
+
+/* Port numarasına göre Supported Protocol major version. */
+static uint8_t xhci_port_major[256];
 
 static struct xhci_event_queue xhci_event_queues[XHCI_QUEUE_COUNT];
 
@@ -228,6 +249,79 @@ static bool wait_register(
     }
 
     return false;
+}
+
+static void xhci_read_supported_protocols(
+    uint32_t hccparams1,
+    uint32_t max_ports
+) {
+    for (uint32_t i = 0; i < 256; i++)
+        xhci_port_major[i] = 0;
+
+    /* HCCPARAMS1.xECP, DWORD cinsinden extended capability konumu. */
+    uint32_t offset = ((hccparams1 >> 16) & 0xFFFFu) * 4u;
+
+    if (offset == 0)
+        return;
+
+    /* Hatalı capability zincirinde sonsuz döngü oluşmasını önle. */
+    for (uint32_t n = 0; n < 256; n++) {
+        if (offset < 0x20 || offset >= 0x10000u)
+            break;
+
+        uint32_t header = mmio_read32(xhci_mmio, offset);
+
+        if (header == 0 || header == 0xFFFFFFFFu)
+            break;
+
+        uint8_t cap_id = (uint8_t)(header & 0xFFu);
+        uint8_t next = (uint8_t)((header >> 8) & 0xFFu);
+
+        /*
+         * Supported Protocol capability, ID = 2.
+         * Header bits 31:24 = major version.
+         * Capability + 8: Compatible Port Offset / Count.
+         */
+        if (cap_id == 2u) {
+            uint8_t major = (uint8_t)(header >> 24);
+            uint32_t port_info =
+                mmio_read32(xhci_mmio, offset + 8u);
+
+            uint32_t first = port_info & 0xFFu;
+            uint32_t count = (port_info >> 8) & 0xFFu;
+
+            if (first != 0 && count != 0 &&
+                first <= max_ports &&
+                count <= max_ports - first + 1u) {
+
+                for (uint32_t p = first;
+                     p < first + count && p < 256u;
+                     p++) {
+                    xhci_port_major[p] = major;
+                }
+            }
+        }
+
+        if (next == 0)
+            break;
+
+        uint32_t step = (uint32_t)next * 4u;
+
+        if (offset > 0x10000u - step)
+            break;
+
+        offset += step;
+    }
+
+    serial_write("[xHCI] Port protocol map:\n");
+
+    for (uint32_t p = 1; p <= max_ports; p++) {
+        serial_write("  Port ");
+        serial_write_dec(p);
+        serial_write(": USB ");
+        serial_write_dec(xhci_port_major[p]);
+        serial_write("\n");
+    }
 }
 
 static bool xhci_allocate_rings(
@@ -468,40 +562,65 @@ static bool xhci_test_command_ring(void)
     return true;
 }
 
-static bool xhci_reset_connected_port(uint32_t ports, uint8_t *port_id)
-{
-    const uint32_t portsc_change_bits = 0x7Fu << 17;
-
+static bool xhci_reset_connected_port(
+    uint32_t ports,
+    uint8_t *port_id
+) {
     for (uint32_t i = 0; i < ports; i++) {
-        uint32_t offset = xhci_op + 0x400 + i * 0x10;
+        uint32_t offset = xhci_op + 0x400u + i * 0x10u;
         uint32_t portsc = mmio_read32(xhci_mmio, offset);
 
-        if ((portsc & 1u) == 0)
+        if ((portsc & XHCI_PORTSC_CCS) == 0)
             continue;
 
-        serial_write("[xHCI] Resetting connected port ");
-        serial_write_dec(i + 1);
+        uint32_t port_number = i + 1u;
+
+        serial_write("[xHCI] Connected port ");
+        serial_write_dec(port_number);
+        serial_write(", protocol major: ");
+        serial_write_dec(
+            port_number < 256u
+                ? xhci_port_major[port_number]
+                : 0
+        );
         serial_write("\n");
 
         /*
-         * PORTSC change bits are write-one-to-clear.
-         * Clear them from our write value so we do not
-         * accidentally acknowledge unrelated changes.
+         * PORTSC özel yazma kurallarına sahiptir:
+         * - PED ve reset bitlerini yazma değerinde 0 tut.
+         * - RW1C change bitlerini 0 tut.
+         * - LWS ve ayrılmış bitleri temizle.
+         * - PP değerini koru.
          */
-        uint32_t value =
-            portsc & ~(portsc_change_bits | (1u << 4) |
-                       (1u << 1) | (1u << 31));
+        uint32_t value = portsc;
 
-        /* USB2 port reset: PR, bit 4. */
-        mmio_write32(xhci_mmio, offset, value | (1u << 4));
+        value &= ~(XHCI_PORTSC_PED |
+                   XHCI_PORTSC_PR |
+                   XHCI_PORTSC_WPR |
+                   XHCI_PORTSC_CHANGE_MASK |
+                   XHCI_PORTSC_LWS |
+                   (1u << 2) |
+                   (3u << 28));
+
+        /*
+         * PR, xHCI port reset bitidir.
+         * USB 3.x için de hot reset başlatabilir.
+         * WPR farklı bir warm-reset işlemidir ve
+         * her USB 3.x portunda zorunlu değildir.
+         */
+        mmio_write32(
+            xhci_mmio,
+            offset,
+            value | XHCI_PORTSC_PR
+        );
 
         if (!wait_register(
                 xhci_mmio,
                 offset,
-                1u << 4,
+                XHCI_PORTSC_PR,
                 0)) {
             serial_write("[xHCI] Port reset timed out\n");
-            return false;
+            continue;
         }
 
         portsc = mmio_read32(xhci_mmio, offset);
@@ -510,22 +629,23 @@ static bool xhci_reset_connected_port(uint32_t ports, uint8_t *port_id)
         serial_write_hex(portsc);
         serial_write("\n");
 
-        if ((portsc & 1u) == 0) {
+        if ((portsc & XHCI_PORTSC_CCS) == 0) {
             serial_write("[xHCI] Device disconnected during reset\n");
-            return false;
+            continue;
         }
 
-        if ((portsc & (1u << 1)) == 0) {
+        if ((portsc & XHCI_PORTSC_PED) == 0) {
             serial_write("[xHCI] Port did not become enabled\n");
-            return false;
+            continue;
         }
 
-        *port_id = (uint8_t)(i + 1);
+        *port_id = (uint8_t)port_number;
+
         serial_write("[xHCI] Port reset and enabled\n");
         return true;
     }
 
-    serial_write("[xHCI] No connected USB port found\n");
+    serial_write("[xHCI] No usable connected USB port found\n");
     return false;
 }
 
@@ -1187,6 +1307,14 @@ bool xhci_probe(
 
     uint32_t hcsparams1 = mmio_read32(xhci_mmio, 0x04);
     uint32_t hcsparams2 = mmio_read32(xhci_mmio, 0x08);
+
+    uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
+
+    xhci_read_supported_protocols(
+        hccparams1,
+        (hcsparams1 >> 24) & 0xFFu
+    );
+
     uint32_t dboff = mmio_read32(xhci_mmio, 0x14) & ~0x3u;
     uint32_t rtsoff = mmio_read32(xhci_mmio, 0x18) & ~0x1Fu;
 
