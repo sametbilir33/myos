@@ -759,9 +759,6 @@ void kernel_main(void)
 
             if (xhci_enabled)
             {
-                uint8_t usb_slot_id = 0;
-                uint8_t usb_speed = 0;
-
                 if (xhci_probe_all(
                         xhci.bar0,
                         hhdm_offset,

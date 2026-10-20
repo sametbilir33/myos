@@ -9,7 +9,7 @@
 
 #define USB_HID_DESCRIPTOR_BUFFER_SIZE 4096u
 
-static struct usb_hid_mouse usb_mice[USB_HID_MOUSE_MAX_DEVICES];
+static struct usb_hid_mouse usb_mice[USB_HID_MOUSE_MAX_SLOTS];
 
 bool usb_hid_mouse_decode_boot_report(
     const uint8_t *report,
@@ -98,7 +98,7 @@ bool usb_hid_mouse_find_boot_endpoint(
 
 bool usb_hid_mouse_init(uint8_t slot_id, uint8_t speed)
 {
-    if (slot_id == 0 || slot_id >= USB_HID_MOUSE_MAX_DEVICES)
+    if (slot_id == 0)
         return false;
 
     struct usb_hid_mouse *mouse = &usb_mice[slot_id];

@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #define USB_HID_MOUSE_MAX_DEVICES 32
+#define USB_HID_MOUSE_MAX_SLOTS   256
 
 struct usb_hid_mouse_endpoint_info {
     uint8_t interface_number;

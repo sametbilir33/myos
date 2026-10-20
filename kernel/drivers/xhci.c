@@ -179,7 +179,7 @@ static void xhci_dispatch_events(void)
         uint8_t slot = (uint8_t)(event.control >> 24);
         uint8_t endpoint = (uint8_t)((event.control >> 16) & 0x1Fu);
 
-        if (slot == 0 || slot >= XHCI_MAX_DEVICE_SLOTS)
+        if (slot == 0)
             continue;
 
         if (endpoint == 1u) {
@@ -988,7 +988,7 @@ bool xhci_control_transfer(
     uint64_t data_phys
 )
 {
-    if (slot_id == 0 || slot_id >= XHCI_MAX_DEVICE_SLOTS)
+    if (slot_id == 0)
     return false;
 
     xhci_active_slot = slot_id;
@@ -1098,30 +1098,44 @@ static void xhci_interrupt_in_push_trb(
     }
 }
 
+
 static bool xhci_interrupt_in_arm_transfer(void)
 {
-    if (interrupt_in_transfer_pending)
+    uint8_t slot_id = xhci_active_slot;
+
+    if (slot_id == 0)
+        return false;
+
+    struct xhci_device_state *dev = &xhci_devices[slot_id];
+
+    if (!dev->interrupt_configured ||
+        dev->interrupt_buffer == NULL ||
+        dev->interrupt_ring == NULL ||
+        dev->interrupt_packet_size == 0 ||
+        dev->interrupt_dci == 0) {
+        return false;
+    }
+
+    if (dev->interrupt_transfer_pending)
         return true;
 
     xhci_interrupt_in_push_trb(
-        interrupt_in_buffer_phys,
-        interrupt_in_packet_size,
-        (1u << 10) |
-        (1u << 5)
+        dev->interrupt_buffer_phys,
+        dev->interrupt_packet_size,
+        (1u << 10) | (1u << 5)
     );
 
     __asm__ volatile ("mfence" ::: "memory");
 
     mmio_write32(
         xhci_mmio,
-        xhci_doorbell + (uint32_t)interrupt_in_slot * 4u,
-        interrupt_in_dci
+        xhci_doorbell + (uint32_t)slot_id * 4u,
+        dev->interrupt_dci
     );
 
-    interrupt_in_transfer_pending = true;
+    dev->interrupt_transfer_pending = true;
     return true;
 }
-
 
 bool xhci_interrupt_in_configure(
     uint8_t slot_id,
@@ -1133,7 +1147,7 @@ bool xhci_interrupt_in_configure(
     uint64_t buffer_phys
 )
 {
-if (slot_id == 0 || slot_id >= XHCI_MAX_DEVICE_SLOTS)
+if (slot_id == 0)
     return false;
 
 xhci_active_slot = slot_id;
@@ -1151,7 +1165,6 @@ xhci_active_slot = slot_id;
     }
 
     interrupt_in_dci = (uint8_t)(endpoint_number * 2u + 1u);
-    interrupt_in_slot = slot_id;
     interrupt_in_packet_size = max_packet_size;
     interrupt_in_buffer = buffer;
     interrupt_in_buffer_phys = buffer_phys;
@@ -1263,7 +1276,7 @@ xhci_active_slot = slot_id;
 
 bool xhci_interrupt_in_start(uint8_t slot_id)
 {
-    if (slot_id == 0 || slot_id >= XHCI_MAX_DEVICE_SLOTS)
+    if (slot_id == 0)
         return false;
 
     xhci_active_slot = slot_id;
@@ -1296,7 +1309,6 @@ bool xhci_interrupt_in_read(
     *length = 0;
 
     if (slot_id == 0 ||
-        slot_id >= XHCI_MAX_DEVICE_SLOTS ||
         report == NULL ||
         capacity == 0) {
         return false;
@@ -1354,8 +1366,8 @@ bool xhci_probe_all(
     uint64_t hhdm_offset,
     uint8_t *slot_ids,
     uint8_t *speeds,
-    uint8_t *out_count,
-    uint8_t capacity
+    uint8_t capacity,
+    uint8_t *out_count
 )
 {
     if (slot_ids == NULL ||
