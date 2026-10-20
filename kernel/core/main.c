@@ -11,30 +11,22 @@
 #include <memory/dma.h>
 #include <drivers/usb_hid_mouse.h>
 
-__attribute__((used, section(".limine_requests_start")))
-static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
+__attribute__((used, section(".limine_requests_start"))) static volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
 
-__attribute__((used, section(".limine_requests")))
-static volatile struct limine_framebuffer_request framebuffer_request = {
+__attribute__((used, section(".limine_requests"))) static volatile struct limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST_ID,
-    .revision = 0
-};
+    .revision = 0};
 
-__attribute__((used, section(".limine_requests")))
-static volatile struct limine_hhdm_request hhdm_request = {
+__attribute__((used, section(".limine_requests"))) static volatile struct limine_hhdm_request hhdm_request = {
     .id = LIMINE_HHDM_REQUEST_ID,
-    .revision = 0
-};
+    .revision = 0};
 
-__attribute__((used, section(".limine_requests")))
-static volatile struct limine_memmap_request memmap_request = {
+__attribute__((used, section(".limine_requests"))) static volatile struct limine_memmap_request memmap_request = {
     .id = LIMINE_MEMMAP_REQUEST_ID,
     .revision = 0,
-    .response = 0
-};
+    .response = 0};
 
-__attribute__((used, section(".limine_requests_end")))
-static volatile uint64_t limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARKER;
+__attribute__((used, section(".limine_requests_end"))) static volatile uint64_t limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARKER;
 
 #define RGB(r, g, b) framebuffer_rgb((r), (g), (b))
 #define SCREEN_BAR_HEIGHT 38
@@ -58,7 +50,8 @@ static const uint32_t COLOR_PANEL_DARK = 0x00172233;
 static const uint32_t COLOR_HOVER = 0x00334D6B;
 static const uint32_t COLOR_BORDER = 0x00445B78;
 
-struct app_window {
+struct app_window
+{
     int app;
     int x;
     int y;
@@ -84,19 +77,19 @@ static int clip_x, clip_y, clip_w, clip_h;
 
 static inline void outb(uint16_t port, uint8_t value)
 {
-    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
+    __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
 static inline uint8_t inb(uint16_t port)
 {
     uint8_t value;
-    __asm__ volatile ("inb %1, %0" : "=a"(value) : "Nd"(port));
+    __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
     return value;
 }
 
 static inline void outw(uint16_t port, uint16_t value)
 {
-    __asm__ volatile ("outw %0, %1" : : "a"(value), "Nd"(port));
+    __asm__ volatile("outw %0, %1" : : "a"(value), "Nd"(port));
 }
 
 static uint8_t cmos_read(uint8_t reg)
@@ -114,7 +107,8 @@ static uint8_t rtc_get_time(char output[9])
 {
     uint8_t second = 0, minute = 0, hour = 0, mode = 0;
 
-    for (int attempt = 0; attempt < 1000; attempt++) {
+    for (int attempt = 0; attempt < 1000; attempt++)
+    {
         if (cmos_read(0x0A) & 0x80)
             continue;
 
@@ -132,15 +126,18 @@ static uint8_t rtc_get_time(char output[9])
     bool pm = (hour & 0x80) != 0;
     hour &= 0x7F;
 
-    if (!binary_mode) {
+    if (!binary_mode)
+    {
         second = bcd_to_binary(second);
         minute = bcd_to_binary(minute);
         hour = bcd_to_binary(hour);
     }
 
-    if (!hour24_mode) {
+    if (!hour24_mode)
+    {
         hour %= 12;
-        if (pm) hour += 12;
+        if (pm)
+            hour += 12;
     }
 
     hour %= 24;
@@ -170,16 +167,21 @@ static void fill_rect(int x, int y, int w, int h, uint32_t color)
     if (w <= 0 || h <= 0)
         return;
 
-    if (clip_active) {
+    if (clip_active)
+    {
         int x2 = x + w;
         int y2 = y + h;
         int cx2 = clip_x + clip_w;
         int cy2 = clip_y + clip_h;
 
-        if (x < clip_x) x = clip_x;
-        if (y < clip_y) y = clip_y;
-        if (x2 > cx2) x2 = cx2;
-        if (y2 > cy2) y2 = cy2;
+        if (x < clip_x)
+            x = clip_x;
+        if (y < clip_y)
+            y = clip_y;
+        if (x2 > cx2)
+            x2 = cx2;
+        if (y2 > cy2)
+            y2 = cy2;
 
         if (x2 <= x || y2 <= y)
             return;
@@ -194,13 +196,15 @@ static void fill_rect(int x, int y, int w, int h, uint32_t color)
 static int text_length(const char *s)
 {
     int n = 0;
-    while (s[n]) n++;
+    while (s[n])
+        n++;
     return n;
 }
 
 static void draw_text(int x, int y, const char *text, uint32_t color, int scale)
 {
-    if (clip_active) {
+    if (clip_active)
+    {
         int w = text_length(text) * 10 * scale;
         int h = 16 * scale;
 
@@ -214,12 +218,18 @@ static void draw_text(int x, int y, const char *text, uint32_t color, int scale)
 
 static const char *app_title(int app)
 {
-    switch (app) {
-    case 1: return "About MyOS";
-    case 2: return "Notepad";
-    case 3: return "File Manager";
-    case 4: return "Terminal";
-    default: return "Application";
+    switch (app)
+    {
+    case 1:
+        return "About MyOS";
+    case 2:
+        return "Notepad";
+    case 3:
+        return "File Manager";
+    case 4:
+        return "Terminal";
+    default:
+        return "Application";
     }
 }
 
@@ -272,7 +282,8 @@ static void draw_window(const struct app_window *win)
 {
     int x = win->x, y = win->y, w = WINDOW_W, h = WINDOW_H;
 
-    if (clip_active) {
+    if (clip_active)
+    {
         if (x + w <= clip_x || x >= clip_x + clip_w ||
             y + h <= clip_y || y >= clip_y + clip_h)
             return;
@@ -288,7 +299,8 @@ static void draw_window(const struct app_window *win)
     fill_rect(x + w - 28, y + 4, 22, 22, RGB(130, 45, 55));
     draw_text(x + w - 21, y + 11, "X", COLOR_TEXT, 1);
 
-    switch (win->app) {
+    switch (win->app)
+    {
     case 1:
         draw_text(x + 18, y + 55, "MyOS", COLOR_ACCENT, 2);
         draw_text(x + 18, y + 92, "64-bit experimental desktop", COLOR_TEXT, 1);
@@ -319,10 +331,14 @@ static void redraw_region(int x, int y, int width, int height)
     int x2 = x + width;
     int y2 = y + height;
 
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    if (x2 > sw) x2 = sw;
-    if (y2 > sh) y2 = sh;
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+    if (x2 > sw)
+        x2 = sw;
+    if (y2 > sh)
+        y2 = sh;
 
     if (x2 <= x || y2 <= y)
         return;
@@ -387,7 +403,8 @@ static void remove_window(int index)
 
 static void open_app(int app)
 {
-    if (window_count >= MAX_WINDOWS) {
+    if (window_count >= MAX_WINDOWS)
+    {
         serial_write("[GUI] Window limit reached\n");
         return;
     }
@@ -399,12 +416,16 @@ static void open_app(int app)
     int max_x = (int)framebuffer_width() - WINDOW_W;
     int max_y = (int)framebuffer_height() - WINDOW_H;
 
-    if (max_x < 0) max_x = 0;
-    if (max_y < SCREEN_BAR_HEIGHT + 2) max_y = SCREEN_BAR_HEIGHT + 2;
-    if (x > max_x) x = max_x;
-    if (y > max_y) y = max_y;
+    if (max_x < 0)
+        max_x = 0;
+    if (max_y < SCREEN_BAR_HEIGHT + 2)
+        max_y = SCREEN_BAR_HEIGHT + 2;
+    if (x > max_x)
+        x = max_x;
+    if (y > max_y)
+        y = max_y;
 
-    windows[window_count++] = (struct app_window){ .app = app, .x = x, .y = y };
+    windows[window_count++] = (struct app_window){.app = app, .x = x, .y = y};
     redraw_region(x, y, WINDOW_W, WINDOW_H);
 }
 
@@ -414,26 +435,30 @@ static void system_shutdown(void)
     outw(0x604, 0x2000);
     outw(0xB004, 0x2000);
 
-    for (;;) __asm__ volatile ("hlt");
+    for (;;)
+        __asm__ volatile("hlt");
 }
 
 static void system_reboot(void)
 {
     serial_write("[POWER] Reboot requested\n");
 
-    for (int i = 0; i < 100000; i++) {
+    for (int i = 0; i < 100000; i++)
+    {
         if ((inb(0x64) & 0x02) == 0)
             break;
     }
 
     outb(0x64, 0xFE);
 
-    for (;;) __asm__ volatile ("hlt");
+    for (;;)
+        __asm__ volatile("hlt");
 }
 
 static int find_window_at(int x, int y)
 {
-    for (int i = window_count - 1; i >= 0; i--) {
+    for (int i = window_count - 1; i >= 0; i--)
+    {
         if (inside(x, y, windows[i].x, windows[i].y, WINDOW_W, WINDOW_H))
             return i;
     }
@@ -443,27 +468,37 @@ static int find_window_at(int x, int y)
 
 static void handle_click(int x, int y)
 {
-    if (inside(x, y, 8, 5, 92, 27)) {
+    if (inside(x, y, 8, 5, 92, 27))
+    {
         menu_open = !menu_open;
         redraw_region(MENU_X, MENU_Y, MENU_W, MENU_H);
         redraw_region(8, 5, 92, 27);
         return;
     }
 
-    if (menu_open) {
-        if (inside(x, y, MENU_X, MENU_Y, MENU_W, MENU_H)) {
+    if (menu_open)
+    {
+        if (inside(x, y, MENU_X, MENU_Y, MENU_W, MENU_H))
+        {
             int app = 0;
 
-            if (inside(x, y, MENU_X, 47, MENU_W, 22)) app = 1;
-            else if (inside(x, y, MENU_X, 70, MENU_W, 22)) app = 2;
-            else if (inside(x, y, MENU_X, 93, MENU_W, 22)) app = 3;
-            else if (inside(x, y, MENU_X, 116, MENU_W, 22)) app = 4;
-            else if (inside(x, y, MENU_X, 148, MENU_W, 22)) {
+            if (inside(x, y, MENU_X, 47, MENU_W, 22))
+                app = 1;
+            else if (inside(x, y, MENU_X, 70, MENU_W, 22))
+                app = 2;
+            else if (inside(x, y, MENU_X, 93, MENU_W, 22))
+                app = 3;
+            else if (inside(x, y, MENU_X, 116, MENU_W, 22))
+                app = 4;
+            else if (inside(x, y, MENU_X, 148, MENU_W, 22))
+            {
                 menu_open = false;
                 redraw_region(MENU_X, MENU_Y, MENU_W, MENU_H);
                 redraw_region(8, 5, 92, 27);
                 system_shutdown();
-            } else if (inside(x, y, MENU_X, 171, MENU_W, 22)) {
+            }
+            else if (inside(x, y, MENU_X, 171, MENU_W, 22))
+            {
                 menu_open = false;
                 redraw_region(MENU_X, MENU_Y, MENU_W, MENU_H);
                 redraw_region(8, 5, 92, 27);
@@ -493,19 +528,22 @@ static void handle_click(int x, int y)
     int old_x = windows[index].x;
     int old_y = windows[index].y;
 
-    if (inside(x, y, old_x + WINDOW_W - 28, old_y + 4, 22, 22)) {
+    if (inside(x, y, old_x + WINDOW_W - 28, old_y + 4, 22, 22))
+    {
         remove_window(index);
         redraw_region(old_x, old_y, WINDOW_W, WINDOW_H);
         return;
     }
 
-    if (index != window_count - 1) {
+    if (index != window_count - 1)
+    {
         bring_to_front(index);
         redraw_region(old_x, old_y, WINDOW_W, WINDOW_H);
         index = window_count - 1;
     }
 
-    if (inside(x, y, windows[index].x, windows[index].y, WINDOW_W, 30)) {
+    if (inside(x, y, windows[index].x, windows[index].y, WINDOW_W, 30))
+    {
         dragging = true;
         drag_index = index;
         drag_start_x = x;
@@ -530,13 +568,19 @@ static void update_drag(int mouse_x, int mouse_y)
     int max_x = (int)framebuffer_width() - WINDOW_W;
     int max_y = (int)framebuffer_height() - WINDOW_H;
 
-    if (max_x < 0) max_x = 0;
-    if (max_y < SCREEN_BAR_HEIGHT + 2) max_y = SCREEN_BAR_HEIGHT + 2;
+    if (max_x < 0)
+        max_x = 0;
+    if (max_y < SCREEN_BAR_HEIGHT + 2)
+        max_y = SCREEN_BAR_HEIGHT + 2;
 
-    if (new_x < 0) new_x = 0;
-    if (new_y < SCREEN_BAR_HEIGHT + 2) new_y = SCREEN_BAR_HEIGHT + 2;
-    if (new_x > max_x) new_x = max_x;
-    if (new_y > max_y) new_y = max_y;
+    if (new_x < 0)
+        new_x = 0;
+    if (new_y < SCREEN_BAR_HEIGHT + 2)
+        new_y = SCREEN_BAR_HEIGHT + 2;
+    if (new_x > max_x)
+        new_x = max_x;
+    if (new_y > max_y)
+        new_y = max_y;
 
     drag_preview_x = new_x;
     drag_preview_y = new_y;
@@ -545,7 +589,8 @@ static void update_drag(int mouse_x, int mouse_y)
 
 static void finish_drag(void)
 {
-    if (!dragging || drag_index < 0 || drag_index >= window_count) {
+    if (!dragging || drag_index < 0 || drag_index >= window_count)
+    {
         dragging = false;
         drag_index = -1;
         return;
@@ -568,7 +613,8 @@ static void finish_drag(void)
 
 static void handle_gui_event(const struct gui_event *event)
 {
-    switch (event->type) {
+    switch (event->type)
+    {
     case GUI_EVENT_MOUSE_MOVE:
         if (dragging)
             update_drag(event->x, event->y);
@@ -610,38 +656,62 @@ static void stop_with_error(const char *message)
     serial_write(message);
     serial_write("\n");
 
-    for (;;) __asm__ volatile ("hlt");
+    for (;;)
+        __asm__ volatile("hlt");
 }
 
 void kernel_main(void)
 {
     serial_init();
 
-    __asm__ volatile ("cli" ::: "memory");
+    if (!framebuffer_request.response ||
+        framebuffer_request.response->framebuffer_count == 0)
+    {
+        stop_with_error("No Limine framebuffer available");
+    }
+
+    struct limine_framebuffer *fb =
+        framebuffer_request.response->framebuffers[0];
+
+    if (!framebuffer_init(fb))
+        stop_with_error("Framebuffer initialization failed");
+
+    framebuffer_console_init();
+
+    serial_write("[BOOT] MyOS kernel starting\n");
+    serial_write("[BOOT] Limine framebuffer initialized\n");
+    serial_write("[BOOT] Initializing interrupts\n");
+
+    __asm__ volatile("cli" ::: "memory");
     interrupts_init();
-    
+
     struct pci_device xhci;
     bool xhci_found = pci_init(&xhci);
     bool xhci_enabled = false;
     bool usb_mouse_available = false;
 
-    if (xhci_found) {
+    if (xhci_found)
+    {
         xhci_enabled = pci_enable_bus_mastering(&xhci);
 
-        if (!xhci_enabled) {
+        if (!xhci_enabled)
+        {
             serial_write(
-                "[USB] Failed to enable PCI bus mastering\n"
-            );
-        } else {
-            serial_write(
-                "[USB] PCI memory space and bus mastering enabled\n"
-            );
+                "[USB] Failed to enable PCI bus mastering\n");
         }
-    } else {
+        else
+        {
+            serial_write(
+                "[USB] PCI memory space and bus mastering enabled\n");
+        }
+    }
+    else
+    {
         serial_write("[USB] xHCI controller not found\n");
     }
 
-    if (hhdm_request.response != NULL) {
+    if (hhdm_request.response != NULL)
+    {
         uint64_t hhdm_offset = hhdm_request.response->offset;
 
         serial_write("[xHCI] HHDM offset: ");
@@ -650,21 +720,25 @@ void kernel_main(void)
 
         bool dma_ready = false;
 
-        if (memmap_request.response != NULL) {
+        if (memmap_request.response != NULL)
+        {
             dma_ready = dma_init(
                 (struct limine_memmap_response *)
                     memmap_request.response,
-                hhdm_offset
-            );
+                hhdm_offset);
         }
 
-        if (!dma_ready) {
+        if (!dma_ready)
+        {
             serial_write("[DMA] Initialization failed\n");
-        } else {
+        }
+        else
+        {
             uint64_t test_phys = 0;
             void *test_virt = dma_alloc(4096, &test_phys);
 
-            if (test_virt != NULL) {
+            if (test_virt != NULL)
+            {
                 serial_write("[DMA] Test page virtual: ");
                 serial_write_hex((uintptr_t)test_virt);
                 serial_write("\n");
@@ -672,11 +746,14 @@ void kernel_main(void)
                 serial_write("[DMA] Test page physical: ");
                 serial_write_hex(test_phys);
                 serial_write("\n");
-            } else {
+            }
+            else
+            {
                 serial_write("[DMA] Test allocation failed\n");
             }
 
-            if (xhci_enabled) {
+            if (xhci_enabled)
+            {
                 uint8_t usb_slot_id = 0;
                 uint8_t usb_speed = 0;
 
@@ -684,34 +761,54 @@ void kernel_main(void)
                         xhci.bar0,
                         hhdm_offset,
                         &usb_slot_id,
-                        &usb_speed)) {
+                        &usb_speed))
+                {
                     usb_mouse_available = usb_hid_mouse_init(
                         usb_slot_id,
-                        usb_speed
-                    );
+                        usb_speed);
                 }
             }
         }
-    } else {
+    }
+    else
+    {
         serial_write("[xHCI] Limine HHDM response missing\n");
     }
 
     serial_write("[IRQ] IDT, PIC and PIT initialized\n");
-    serial_write("\n[BOOT] MyOS desktop starting\n");
 
-    if (!framebuffer_request.response)
-        stop_with_error("No Limine framebuffer response");
+    if (usb_mouse_available)
+    {
+        serial_write("[BOOT] USB HID mouse ready\n");
+    }
+    else
+    {
+        serial_write("[WARN] USB mouse unavailable\n");
+    }
 
-    if (framebuffer_request.response->framebuffer_count == 0)
-        stop_with_error("No framebuffer available");
+    bool mouse_available = usb_mouse_available;
 
-    struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
+    gui_events_init();
+    gui_events_set_handler(handle_gui_event);
 
-    if (!framebuffer_init(fb))
-        stop_with_error("Framebuffer initialization failed");
+    serial_write("[BOOT] Hardware initialization complete\n");
+    serial_write("[BOOT] Desktop starts in 1 second...\n");
+
+    interrupts_enable();
+    serial_write("[IRQ] Interrupts enabled\n");
+
+    uint64_t boot_wait_start = interrupts_ticks();
+
+    while (interrupts_ticks() - boot_wait_start < 300)
+    {
+        __asm__ volatile("hlt" ::: "memory");
+    }
+
+    framebuffer_console_stop();
 
     rtc_get_time(clock_text);
     clip_active = false;
+
     draw_desktop_background();
     draw_status_bar();
 
@@ -725,39 +822,28 @@ void kernel_main(void)
         cursor_y = (int)framebuffer_height() - CURSOR_H;
 
     cursor_draw_at(cursor_x, cursor_y);
-    serial_write("[DEBUG] Initial cursor draw completed\n");
-
-    if (usb_mouse_available) {
-        serial_write("[BOOT] USB HID mouse ready\n");
-    } else {
-        serial_write("[WARN] USB mouse unavailable\n");
-    }
-
-    bool mouse_available = usb_mouse_available;
-
-    gui_events_init();
-    gui_events_set_handler(handle_gui_event);
-
-    interrupts_enable();
-    serial_write("[IRQ] Interrupts enabled\n");
+    serial_write("[BOOT] Desktop ready\n");
 
     uint8_t previous_buttons = 0;
     uint64_t last_clock_tick = 0;
 
-    for (;;) {
+    for (;;)
+    {
         uint64_t now = interrupts_ticks();
 
-        if (now - last_clock_tick >= 100) {
+        if (now - last_clock_tick >= 100)
+        {
             last_clock_tick = now - (now % 100);
             update_clock();
         }
 
-        if (!mouse_available) {
-            __asm__ volatile ("sti\n\t"
-                              "hlt"
-                              :
-                              :
-                              : "memory");
+        if (!mouse_available)
+        {
+            __asm__ volatile("sti\n\t"
+                             "hlt"
+                             :
+                             :
+                             : "memory");
             continue;
         }
 
@@ -768,12 +854,13 @@ void kernel_main(void)
 
         got_packet = usb_hid_mouse_read_packet(&dx, &dy, &buttons);
 
-        if (!got_packet) {
-            __asm__ volatile ("sti\n\t"
-                              "hlt"
-                              :
-                              :
-                              : "memory");
+        if (!got_packet)
+        {
+            __asm__ volatile("sti\n\t"
+                             "hlt"
+                             :
+                             :
+                             : "memory");
             continue;
         }
 
@@ -783,46 +870,51 @@ void kernel_main(void)
         int new_x = cursor_x + dx;
         int new_y = cursor_y + dy;
 
-        if (new_x < 0) new_x = 0;
-        if (new_y < 0) new_y = 0;
-        if (new_x > max_x) new_x = max_x;
-        if (new_y > max_y) new_y = max_y;
+        if (new_x < 0)
+            new_x = 0;
+        if (new_y < 0)
+            new_y = 0;
+        if (new_x > max_x)
+            new_x = max_x;
+        if (new_y > max_y)
+            new_y = max_y;
 
         bool moved = new_x != cursor_x || new_y != cursor_y;
         bool left_down = (buttons & 1u) && !(previous_buttons & 1u);
         bool left_up = !(buttons & 1u) && (previous_buttons & 1u);
 
-        if (moved || left_down || left_up) {
+        if (moved || left_down || left_up)
+        {
             redraw_region(cursor_x, cursor_y, CURSOR_W, CURSOR_H);
 
             cursor_x = new_x;
             cursor_y = new_y;
 
-            if (moved) {
-                gui_event_push((struct gui_event) {
+            if (moved)
+            {
+                gui_event_push((struct gui_event){
                     .type = GUI_EVENT_MOUSE_MOVE,
                     .x = cursor_x,
                     .y = cursor_y,
-                    .button = 0
-                });
+                    .button = 0});
             }
 
-            if (left_down) {
-                gui_event_push((struct gui_event) {
+            if (left_down)
+            {
+                gui_event_push((struct gui_event){
                     .type = GUI_EVENT_MOUSE_BUTTON_DOWN,
                     .x = cursor_x,
                     .y = cursor_y,
-                    .button = 1
-                });
+                    .button = 1});
             }
 
-            if (left_up) {
-                gui_event_push((struct gui_event) {
+            if (left_up)
+            {
+                gui_event_push((struct gui_event){
                     .type = GUI_EVENT_MOUSE_BUTTON_UP,
                     .x = cursor_x,
                     .y = cursor_y,
-                    .button = 1
-                });
+                    .button = 1});
             }
 
             gui_events_dispatch();

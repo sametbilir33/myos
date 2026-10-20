@@ -16,5 +16,8 @@ uint32_t framebuffer_get_pixel(int x, int y);
 void framebuffer_set_pixel(int x, int y, uint32_t color);
 void framebuffer_set_clip(int x, int y, int width, int height);
 void framebuffer_reset_clip(void);
+void framebuffer_console_init(void);
+void framebuffer_console_putc(char c);
+void framebuffer_console_stop(void);
 
 #endif

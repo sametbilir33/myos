@@ -1,5 +1,6 @@
 #include <runtime/serial.h>
 #include <stdint.h>
+#include <graphics/graphics.h>
 
 #define COM1 0x3F8
 
@@ -28,6 +29,8 @@ void serial_init(void)
 
 void serial_write_char(char c)
 {
+    framebuffer_console_putc(c);
+
     for (unsigned int i = 0; i < 1000000; i++) {
         if (inb(COM1 + 5) & 0x20) {
             outb(COM1, (uint8_t)c);

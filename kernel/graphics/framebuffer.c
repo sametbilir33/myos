@@ -7,6 +7,139 @@ static uint32_t screen_height;
 static bool clip_enabled;
 static int clip_x1, clip_y1, clip_x2, clip_y2;
 
+#define CONSOLE_MAX_COLS 256
+#define CONSOLE_MAX_ROWS 128
+
+static bool console_active;
+static int console_cols;
+static int console_rows;
+static int console_x;
+static int console_y;
+static char console_lines[CONSOLE_MAX_ROWS][CONSOLE_MAX_COLS];
+
+static void console_redraw(void)
+{
+    framebuffer_draw_rect(
+        0, 0,
+        (int)screen_width, (int)screen_height,
+        framebuffer_rgb(12, 16, 22)
+    );
+
+    for (int row = 0; row < console_rows; row++) {
+        char line[CONSOLE_MAX_COLS + 1];
+
+        for (int col = 0; col < console_cols; col++)
+            line[col] = console_lines[row][col];
+
+        line[console_cols] = '\0';
+
+        framebuffer_draw_text(
+            8, row * 16, line,
+            framebuffer_rgb(210, 225, 235), 1
+        );
+    }
+}
+
+static void console_newline(void)
+{
+    console_x = 0;
+    console_y++;
+
+    if (console_y >= console_rows) {
+        for (int row = 1; row < console_rows; row++) {
+            for (int col = 0; col < console_cols; col++)
+                console_lines[row - 1][col] =
+                    console_lines[row][col];
+        }
+
+        for (int col = 0; col < console_cols; col++)
+            console_lines[console_rows - 1][col] = ' ';
+
+        console_y = console_rows - 1;
+        console_redraw();
+    } else {
+        framebuffer_draw_rect(
+            0, console_y * 16,
+            (int)screen_width, 16,
+            framebuffer_rgb(12, 16, 22)
+        );
+    }
+}
+
+void framebuffer_console_init(void)
+{
+    if (!framebuffer || screen_width < 16 || screen_height < 16)
+        return;
+
+    console_cols = (int)(screen_width / 8);
+    console_rows = (int)(screen_height / 16);
+
+    if (console_cols > CONSOLE_MAX_COLS)
+        console_cols = CONSOLE_MAX_COLS;
+
+    if (console_rows > CONSOLE_MAX_ROWS)
+        console_rows = CONSOLE_MAX_ROWS;
+
+    if (console_cols < 1 || console_rows < 1)
+        return;
+
+    for (int row = 0; row < console_rows; row++) {
+        for (int col = 0; col < console_cols; col++)
+            console_lines[row][col] = ' ';
+    }
+
+    console_x = 0;
+    console_y = 0;
+    console_active = true;
+
+    console_redraw();
+}
+
+void framebuffer_console_putc(char c)
+{
+    if (!console_active)
+        return;
+
+    if (c == '\r')
+        return;
+
+    if (c == '\n') {
+        console_newline();
+        return;
+    }
+
+    if (c == '\t') {
+        for (int i = 0; i < 4; i++)
+            framebuffer_console_putc(' ');
+        return;
+    }
+
+    if ((unsigned char)c < 32)
+        return;
+
+    if (console_x >= console_cols)
+        console_newline();
+
+    console_lines[console_y][console_x] = c;
+
+    char text[2] = { c, '\0' };
+
+    framebuffer_draw_text(
+        8 + console_x * 8,
+        console_y * 16,
+        text,
+        framebuffer_rgb(210, 225, 235),
+        1
+    );
+
+    console_x++;
+}
+
+void framebuffer_console_stop(void)
+{
+    console_active = false;
+}
+
 bool framebuffer_init(struct limine_framebuffer *fb)
 {
     if (!fb || !fb->address || fb->bpp != 32)

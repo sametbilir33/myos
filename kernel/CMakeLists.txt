@@ -73,7 +73,6 @@ execute_process(
     COMMAND_ERROR_IS_FATAL ANY
 )
 
-# Always rebuild the ISO on every cmake --build invocation.
 add_custom_target(iso ALL
     COMMAND "${CMAKE_COMMAND}" -E rm -f "${ISO_FILE}"
 
