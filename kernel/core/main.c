@@ -39,6 +39,7 @@ __attribute__((used, section(".limine_requests_end"))) static volatile uint64_t 
 #define WINDOW_W 420
 #define WINDOW_H 240
 #define MAX_WINDOWS 8
+#define USB_MOUSE_LIMIT 32
 
 static const uint32_t COLOR_BACKGROUND = 0x00213B60;
 static const uint32_t COLOR_BAR = 0x00132642;
@@ -56,6 +57,10 @@ struct app_window
     int x;
     int y;
 };
+
+static uint8_t usb_slot_ids[USB_MOUSE_LIMIT];
+static uint8_t usb_speeds[USB_MOUSE_LIMIT];
+static uint8_t usb_mouse_count;
 
 static struct app_window windows[MAX_WINDOWS];
 static int window_count;
@@ -757,15 +762,26 @@ void kernel_main(void)
                 uint8_t usb_slot_id = 0;
                 uint8_t usb_speed = 0;
 
-                if (xhci_probe(
+                if (xhci_probe_all(
                         xhci.bar0,
                         hhdm_offset,
-                        &usb_slot_id,
-                        &usb_speed))
+                        usb_slot_ids,
+                        usb_speeds,
+                        USB_MOUSE_LIMIT,
+                        &usb_mouse_count))
                 {
-                    usb_mouse_available = usb_hid_mouse_init(
-                        usb_slot_id,
-                        usb_speed);
+
+                    usb_mouse_available = false;
+
+                    for (uint8_t i = 0; i < usb_mouse_count; i++)
+                    {
+                        if (usb_hid_mouse_init(
+                                usb_slot_ids[i],
+                                usb_speeds[i]))
+                        {
+                            usb_mouse_available = true;
+                        }
+                    }
                 }
             }
         }
@@ -824,6 +840,8 @@ void kernel_main(void)
     cursor_draw_at(cursor_x, cursor_y);
     serial_write("[BOOT] Desktop ready\n");
 
+    static uint8_t mouse_buttons[USB_MOUSE_LIMIT] = {0};
+
     uint8_t previous_buttons = 0;
     uint64_t last_clock_tick = 0;
 
@@ -849,10 +867,29 @@ void kernel_main(void)
 
         int dx = 0;
         int dy = 0;
-        uint8_t buttons = previous_buttons;
+        uint8_t buttons = 0;
         bool got_packet = false;
 
-        got_packet = usb_hid_mouse_read_packet(&dx, &dy, &buttons);
+        for (uint8_t i = 0; i < usb_mouse_count; i++)
+        {
+            int device_dx = 0;
+            int device_dy = 0;
+            uint8_t device_buttons = mouse_buttons[i];
+
+            if (usb_hid_mouse_read_packet(
+                    usb_slot_ids[i],
+                    &device_dx,
+                    &device_dy,
+                    &device_buttons))
+            {
+                dx += device_dx;
+                dy += device_dy;
+                mouse_buttons[i] = device_buttons;
+                got_packet = true;
+            }
+
+            buttons |= mouse_buttons[i];
+        }
 
         if (!got_packet)
         {

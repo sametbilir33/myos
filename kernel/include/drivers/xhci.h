@@ -4,11 +4,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-bool xhci_probe(
+bool xhci_probe_all(
     uint64_t bar_phys,
     uint64_t hhdm_offset,
-    uint8_t *slot_id,
-    uint8_t *speed
+    uint8_t *slot_ids,
+    uint8_t *speeds,
+    uint8_t capacity,
+    uint8_t *out_count
 );
 
 bool xhci_control_transfer(

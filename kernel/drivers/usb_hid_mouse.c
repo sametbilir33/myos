@@ -9,11 +9,7 @@
 
 #define USB_HID_DESCRIPTOR_BUFFER_SIZE 4096u
 
-static uint8_t *descriptor_buffer;
-static uint64_t descriptor_buffer_phys;
-
-static uint8_t *report_buffer;
-static uint64_t report_buffer_phys;
+static struct usb_hid_mouse usb_mice[USB_HID_MOUSE_MAX_DEVICES];
 
 bool usb_hid_mouse_decode_boot_report(
     const uint8_t *report,
@@ -102,20 +98,38 @@ bool usb_hid_mouse_find_boot_endpoint(
 
 bool usb_hid_mouse_init(uint8_t slot_id, uint8_t speed)
 {
-    descriptor_buffer = dma_alloc(
+    if (slot_id == 0 || slot_id >= USB_HID_MOUSE_MAX_DEVICES)
+        return false;
+
+    struct usb_hid_mouse *mouse = &usb_mice[slot_id];
+
+    if (mouse->active)
+        return true;
+
+    mouse->slot_id = slot_id;
+    mouse->speed = speed;
+
+    mouse->descriptor_buffer = dma_alloc(
         USB_HID_DESCRIPTOR_BUFFER_SIZE,
-        &descriptor_buffer_phys
+        &mouse->descriptor_buffer_phys
     );
 
-    report_buffer = dma_alloc(
+    mouse->report_buffer = dma_alloc(
         USB_HID_DESCRIPTOR_BUFFER_SIZE,
-        &report_buffer_phys
+        &mouse->report_buffer_phys
     );
 
-    if (descriptor_buffer == NULL || report_buffer == NULL) {
-        serial_write("[USB HID] DMA buffer allocation failed\n");
+    if (mouse->descriptor_buffer == NULL ||
+        mouse->report_buffer == NULL) {
+        serial_write("[USB HID] Per-device DMA allocation failed\n");
         return false;
     }
+
+    uint8_t *descriptor_buffer = mouse->descriptor_buffer;
+    uint64_t descriptor_buffer_phys = mouse->descriptor_buffer_phys;
+
+    uint8_t *report_buffer = mouse->report_buffer;
+    uint64_t report_buffer_phys = mouse->report_buffer_phys;
 
     serial_write("[USB HID] Reading Device Descriptor\n");
 
@@ -260,41 +274,61 @@ bool usb_hid_mouse_init(uint8_t slot_id, uint8_t speed)
         return false;
     }
 
-    if (!xhci_interrupt_in_start()) {
+    if (!xhci_interrupt_in_start(slot_id)) {
         serial_write("[USB HID] Interrupt-IN start failed\n");
         return false;
     }
 
-    serial_write("[USB HID] Boot Mouse initialized\n");
-    serial_write("[USB HID] Interrupt-IN polling started\n");
+    mouse->active = true;
+    mouse->buttons = 0;
+
+    serial_write("[USB HID] Boot Mouse initialized, slot=");
+    serial_write_dec(slot_id);
+    serial_write("\n");
 
     return true;
 }
 
 bool usb_hid_mouse_read_packet(
+    uint8_t slot_id,
     int *dx,
     int *dy,
     uint8_t *buttons
 )
 {
+    if (slot_id == 0 ||
+        slot_id >= USB_HID_MOUSE_MAX_DEVICES ||
+        dx == NULL ||
+        dy == NULL ||
+        buttons == NULL) {
+        return false;
+    }
+
+    struct usb_hid_mouse *mouse = &usb_mice[slot_id];
+
+    if (!mouse->active)
+        return false;
+
     uint8_t report[255];
     uint16_t length = 0;
 
-    if (dx == NULL || dy == NULL || buttons == NULL)
-        return false;
-
     if (!xhci_interrupt_in_read(
+            slot_id,
             report,
             sizeof(report),
             &length)) {
         return false;
     }
 
-    return usb_hid_mouse_decode_boot_report(
-        report,
-        length,
-        dx,
-        dy,
-        buttons
-    );
+    if (!usb_hid_mouse_decode_boot_report(
+            report,
+            length,
+            dx,
+            dy,
+            buttons)) {
+        return false;
+    }
+
+    mouse->buttons = *buttons;
+    return true;
 }

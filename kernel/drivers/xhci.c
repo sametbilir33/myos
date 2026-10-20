@@ -88,18 +88,39 @@ struct xhci_device_state {
     bool interrupt_configured;
     bool interrupt_ready;
     bool interrupt_transfer_pending;
+
+    struct xhci_trb interrupt_event;
+    bool interrupt_event_ready;
 };
 
-static struct xhci_device_state
-    xhci_devices[XHCI_MAX_DEVICE_SLOTS];
+static struct xhci_device_state xhci_devices[XHCI_MAX_DEVICE_SLOTS];
+
+static uint8_t xhci_active_slot;
+
+#define input_context              (xhci_devices[xhci_active_slot].input_context)
+#define input_context_phys         (xhci_devices[xhci_active_slot].input_context_phys)
+#define device_context             (xhci_devices[xhci_active_slot].device_context)
+#define device_context_phys        (xhci_devices[xhci_active_slot].device_context_phys)
+#define ep0_ring                   (xhci_devices[xhci_active_slot].ep0_ring)
+#define ep0_ring_phys              (xhci_devices[xhci_active_slot].ep0_ring_phys)
+#define ep0_enqueue                (xhci_devices[xhci_active_slot].ep0_enqueue)
+#define ep0_cycle                  (xhci_devices[xhci_active_slot].ep0_cycle)
+#define interrupt_in_buffer        (xhci_devices[xhci_active_slot].interrupt_buffer)
+#define interrupt_in_buffer_phys   (xhci_devices[xhci_active_slot].interrupt_buffer_phys)
+#define interrupt_in_ring          (xhci_devices[xhci_active_slot].interrupt_ring)
+#define interrupt_in_ring_phys     (xhci_devices[xhci_active_slot].interrupt_ring_phys)
+#define interrupt_in_enqueue       (xhci_devices[xhci_active_slot].interrupt_enqueue)
+#define interrupt_in_cycle         (xhci_devices[xhci_active_slot].interrupt_cycle)
+#define interrupt_in_packet_size   (xhci_devices[xhci_active_slot].interrupt_packet_size)
+#define interrupt_in_dci           (xhci_devices[xhci_active_slot].interrupt_dci)
+#define interrupt_in_configured    (xhci_devices[xhci_active_slot].interrupt_configured)
+#define interrupt_in_ready         (xhci_devices[xhci_active_slot].interrupt_ready)
+#define interrupt_in_transfer_pending (xhci_devices[xhci_active_slot].interrupt_transfer_pending)
 
 /* Port numarasına göre Supported Protocol major version. */
 static uint8_t xhci_port_major[256];
 
 static struct xhci_event_queue xhci_event_queues[XHCI_QUEUE_COUNT];
-
-static uint8_t interrupt_in_slot;
-static uint8_t interrupt_in_dci;
 
 static bool xhci_pop_event(struct xhci_trb *out);
 
@@ -145,29 +166,34 @@ static void xhci_dispatch_events(void)
 
     while (xhci_pop_event(&event)) {
         uint32_t type = (event.control >> 10) & 0x3Fu;
-        enum xhci_event_queue_id queue_id;
 
         if (type == 33u) {
-            queue_id = XHCI_QUEUE_COMMAND;
-        } else if (type == 32u) {
-            uint8_t slot = (uint8_t)(event.control >> 24);
-            uint8_t endpoint =
-                (uint8_t)((event.control >> 16) & 0x1Fu);
-
-            if (slot == interrupt_in_slot &&
-                endpoint == interrupt_in_dci) {
-                queue_id = XHCI_QUEUE_INTERRUPT;
-            } else if (endpoint == 1u) {
-                queue_id = XHCI_QUEUE_CONTROL;
-            } else {
-                continue;
-            }
-        } else {
+            if (!xhci_event_queue_push(XHCI_QUEUE_COMMAND, &event))
+                serial_write("[xHCI] Command event queue full\n");
             continue;
         }
 
-        if (!xhci_event_queue_push(queue_id, &event)) {
-            serial_write("[xHCI] Software event queue full\n");
+        if (type != 32u)
+            continue;
+
+        uint8_t slot = (uint8_t)(event.control >> 24);
+        uint8_t endpoint = (uint8_t)((event.control >> 16) & 0x1Fu);
+
+        if (slot == 0 || slot >= XHCI_MAX_DEVICE_SLOTS)
+            continue;
+
+        if (endpoint == 1u) {
+            if (!xhci_event_queue_push(XHCI_QUEUE_CONTROL, &event))
+                serial_write("[xHCI] Control event queue full\n");
+            continue;
+        }
+
+        struct xhci_device_state *dev = &xhci_devices[slot];
+
+        if (dev->interrupt_configured &&
+            endpoint == dev->interrupt_dci) {
+            dev->interrupt_event = event;
+            dev->interrupt_event_ready = true;
         }
     }
 }
@@ -211,34 +237,10 @@ static uint64_t erst_phys;
 static uint64_t *dcbaa;
 static uint64_t dcbaa_phys;
 
-static uint8_t *input_context;
-static uint64_t input_context_phys;
-
-static uint8_t *device_context;
-static uint64_t device_context_phys;
-
-static struct xhci_trb *ep0_ring;
-static uint64_t ep0_ring_phys;
-static uint16_t ep0_enqueue = 0;
-static uint8_t ep0_cycle = 1;
 static uint32_t xhci_context_size;
 
 static uint16_t event_dequeue;
 static uint8_t event_cycle = 1;
-
-static uint8_t *interrupt_in_buffer;
-static uint64_t interrupt_in_buffer_phys;
-
-static struct xhci_trb *interrupt_in_ring;
-static uint64_t interrupt_in_ring_phys;
-
-static uint8_t interrupt_in_enqueue;
-static uint8_t interrupt_in_cycle = 1;
-static uint16_t interrupt_in_packet_size;
-
-static bool interrupt_in_configured;
-static bool interrupt_in_ready;
-static bool interrupt_in_transfer_pending;
 
 static uint16_t command_enqueue;
 static uint8_t command_cycle = 1;
@@ -601,9 +603,10 @@ static bool xhci_test_command_ring(void)
 
 static bool xhci_reset_connected_port(
     uint32_t ports,
+    uint32_t start_index,
     uint8_t *port_id
-) {
-    for (uint32_t i = 0; i < ports; i++) {
+){
+    for (uint32_t i = start_index; i < ports; i++) {
         uint32_t offset = xhci_op + 0x400u + i * 0x10u;
         uint32_t portsc = mmio_read32(xhci_mmio, offset);
 
@@ -729,6 +732,11 @@ static bool xhci_prepare_and_address_device(
         return false;
     }
 
+xhci_active_slot = slot_id;
+    ep0_enqueue = 0;
+    ep0_cycle = 1;
+
+    xhci_active_slot = slot_id;
     uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
 
     /* HCCPARAMS1.CSZ: 0 = 32-byte contexts, 1 = 64-byte contexts. */
@@ -980,6 +988,11 @@ bool xhci_control_transfer(
     uint64_t data_phys
 )
 {
+    if (slot_id == 0 || slot_id >= XHCI_MAX_DEVICE_SLOTS)
+    return false;
+
+    xhci_active_slot = slot_id;
+
     if (length != 0 && data_phys == 0)
         return false;
 
@@ -1120,6 +1133,11 @@ bool xhci_interrupt_in_configure(
     uint64_t buffer_phys
 )
 {
+if (slot_id == 0 || slot_id >= XHCI_MAX_DEVICE_SLOTS)
+    return false;
+
+xhci_active_slot = slot_id;
+
     uint8_t endpoint_number = endpoint_address & 0x0Fu;
 
     if (endpoint_number == 0 ||
@@ -1243,13 +1261,19 @@ bool xhci_interrupt_in_configure(
     return true;
 }
 
-bool xhci_interrupt_in_start(void)
+bool xhci_interrupt_in_start(uint8_t slot_id)
 {
+    if (slot_id == 0 || slot_id >= XHCI_MAX_DEVICE_SLOTS)
+        return false;
+
+    xhci_active_slot = slot_id;
+
     if (!interrupt_in_configured)
         return false;
 
     interrupt_in_transfer_pending = false;
     interrupt_in_ready = true;
+    xhci_devices[slot_id].interrupt_event_ready = false;
 
     if (!xhci_interrupt_in_arm_transfer()) {
         interrupt_in_ready = false;
@@ -1260,6 +1284,7 @@ bool xhci_interrupt_in_start(void)
 }
 
 bool xhci_interrupt_in_read(
+    uint8_t slot_id,
     uint8_t *report,
     uint16_t capacity,
     uint16_t *length
@@ -1270,34 +1295,40 @@ bool xhci_interrupt_in_read(
 
     *length = 0;
 
-    if (!interrupt_in_ready ||
+    if (slot_id == 0 ||
+        slot_id >= XHCI_MAX_DEVICE_SLOTS ||
         report == NULL ||
         capacity == 0) {
         return false;
     }
 
-    struct xhci_trb event;
+    xhci_active_slot = slot_id;
+
+    struct xhci_device_state *dev = &xhci_devices[slot_id];
+
+    if (!dev->interrupt_ready)
+        return false;
 
     xhci_dispatch_events();
 
-    if (!xhci_event_queue_pop(XHCI_QUEUE_INTERRUPT, &event))
+    if (!dev->interrupt_event_ready)
         return false;
 
-    interrupt_in_transfer_pending = false;
+    struct xhci_trb event = dev->interrupt_event;
+    dev->interrupt_event_ready = false;
+    dev->interrupt_transfer_pending = false;
 
     uint32_t code = event.status >> 24;
     uint32_t residual = event.status & 0x00FFFFFFu;
-
-    bool valid = code == 1u || code == 13u;
+    bool valid = (code == 1u || code == 13u);
     bool report_ready = false;
 
-    if (valid && residual <= interrupt_in_packet_size) {
-        uint32_t transferred =
-            interrupt_in_packet_size - residual;
+    if (valid && residual <= dev->interrupt_packet_size) {
+        uint32_t transferred = dev->interrupt_packet_size - residual;
 
         if (transferred > 0 && transferred <= capacity) {
-            for (uint32_t j = 0; j < transferred; j++)
-                report[j] = interrupt_in_buffer[j];
+            for (uint32_t i = 0; i < transferred; i++)
+                report[i] = dev->interrupt_buffer[i];
 
             *length = (uint16_t)transferred;
             report_ready = true;
@@ -1305,26 +1336,36 @@ bool xhci_interrupt_in_read(
     }
 
     if (!valid) {
-        serial_write("[xHCI] Interrupt-IN transfer error, code: ");
+        serial_write("[xHCI] Interrupt-IN error, slot=");
+        serial_write_dec(slot_id);
+        serial_write(" code=");
         serial_write_dec(code);
         serial_write("\n");
     }
 
     if (!xhci_interrupt_in_arm_transfer())
-        interrupt_in_ready = false;
+        dev->interrupt_ready = false;
 
     return report_ready;
 }
 
-bool xhci_probe(
+bool xhci_probe_all(
     uint64_t bar_phys,
     uint64_t hhdm_offset,
-    uint8_t *out_slot_id,
-    uint8_t *out_speed
+    uint8_t *slot_ids,
+    uint8_t *speeds,
+    uint8_t *out_count,
+    uint8_t capacity
 )
 {
-    if (out_slot_id == NULL || out_speed == NULL)
-    return false;
+    if (slot_ids == NULL ||
+        speeds == NULL ||
+        out_count == NULL ||
+        capacity == 0) {
+        return false;
+    }
+
+    *out_count = 0;
 
     if (bar_phys == 0) {
         serial_write("[xHCI] Invalid BAR address\n");
@@ -1442,52 +1483,54 @@ bool xhci_probe(
     }
 
     uint32_t ports = (hcsparams1 >> 24) & 0xFFu;
-    uint8_t connected_port = 0;
-    uint8_t slot_id = 0;
+    uint32_t next_port_index = 0;
 
-    if (!xhci_reset_connected_port(ports, &connected_port)) {
-        serial_write("[xHCI] USB port initialization failed\n");
-        return false;
-    }
+    while (next_port_index < ports && *out_count < capacity) {
+        uint8_t connected_port = 0;
 
-    serial_write("[xHCI] Connected USB port: ");
-    serial_write_dec(connected_port);
-    serial_write("\n");
+        if (!xhci_reset_connected_port(
+                ports,
+                next_port_index,
+                &connected_port)) {
+            break;
+        }
 
-    if (!xhci_enable_slot(&slot_id)) {
-        serial_write("[xHCI] Cannot enable USB device slot\n");
-        return false;
-    }
+        /* Sonraki arama, bulunan portun ardından devam eder. */
+        next_port_index = connected_port;
 
-    uint8_t addressed_slot_id = 0;
-uint8_t addressed_speed = 0;
+        uint8_t slot_id = 0;
 
-if (!xhci_prepare_and_address_device(
-        connected_port,
-        slot_id,
-        &addressed_slot_id,
-        &addressed_speed)) {
-    serial_write("[xHCI] USB device addressing failed\n");
-    return false;
-}
+        if (!xhci_enable_slot(&slot_id)) {
+            serial_write("[xHCI] Could not enable slot\n");
+            continue;
+        }
 
-*out_slot_id = addressed_slot_id;
-*out_speed = addressed_speed;
+        uint8_t addressed_slot_id = 0;
+        uint8_t addressed_speed = 0;
 
-    for (uint32_t i = 0; i < ports; i++) {
-        uint32_t portsc_offset = xhci_op + 0x400 + i * 0x10;
-        uint32_t portsc = mmio_read32(xhci_mmio, portsc_offset);
+        if (!xhci_prepare_and_address_device(
+                connected_port,
+                slot_id,
+                &addressed_slot_id,
+                &addressed_speed)) {
+            serial_write("[xHCI] Device addressing failed\n");
+            continue;
+        }
 
-        serial_write("[xHCI] Port ");
-        serial_write_dec(i + 1);
-        serial_write(": PORTSC=");
-        serial_write_hex(portsc);
+        slot_ids[*out_count] = addressed_slot_id;
+        speeds[*out_count] = addressed_speed;
+        (*out_count)++;
 
-        if (portsc & 1u)
-            serial_write(" connected");
-
+        serial_write("[xHCI] Device initialized on port ");
+        serial_write_dec(connected_port);
+        serial_write(", slot ");
+        serial_write_dec(addressed_slot_id);
         serial_write("\n");
     }
 
-    return true;
+    serial_write("[xHCI] Addressed devices: ");
+    serial_write_dec(*out_count);
+    serial_write("\n");
+
+    return *out_count != 0;
 }
