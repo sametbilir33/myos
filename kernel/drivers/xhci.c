@@ -277,14 +277,14 @@ static uint64_t mmio_read64(volatile uint8_t *base, uint32_t offset)
     return ((uint64_t)high << 32) | low;
 }
 
-/* Yüksek yarıyı önce, düşük yarıyı en son yaz. */
+/* [DEĞİŞTİ] 64-bit xHCI register'ları: önce düşük, sonra yüksek DWORD. */
 static void mmio_write64(
     volatile uint8_t *base,
     uint32_t offset,
     uint64_t value
 ) {
-    mmio_write32(base, offset + 4, (uint32_t)(value >> 32));
     mmio_write32(base, offset, (uint32_t)value);
+    mmio_write32(base, offset + 4, (uint32_t)(value >> 32));
 }
 
 static bool wait_register(
@@ -301,6 +301,27 @@ static bool wait_register(
     return false;
 }
 
+/* [YENİ] DMA belleğini sıfırlayan ve hizalamayı kontrol eden sarmalayıcı. */
+static void *xhci_dma_alloc_zero(size_t size, uint64_t *phys)
+{
+    void *p = dma_alloc(size, phys);
+
+    if (p == NULL)
+        return NULL;
+
+    volatile uint8_t *bytes = (volatile uint8_t *)p;
+    for (size_t i = 0; i < size; i++)
+        bytes[i] = 0;
+
+    if ((*phys & 63u) != 0 ||
+        (size >= 4096u && (*phys & 4095u) != 0)) {
+        serial_write("[xHCI] WARNING: DMA buffer misaligned: ");
+        serial_write_hex(*phys);
+        serial_write("\n");
+    }
+
+    return p;
+}
 
 static void xhci_legacy_handoff(uint32_t hccparams1)
 {
@@ -497,19 +518,20 @@ static bool xhci_allocate_rings(
         return false;
     }
 
-    command_ring = dma_alloc(
+    /* [DEĞİŞTİ] dma_alloc -> xhci_dma_alloc_zero */
+    command_ring = xhci_dma_alloc_zero(
         XHCI_TRBS_PER_RING * sizeof(struct xhci_trb),
         &command_ring_phys
     );
 
-    event_ring = dma_alloc(
+    event_ring = xhci_dma_alloc_zero(
         XHCI_TRBS_PER_RING * sizeof(struct xhci_trb),
         &event_ring_phys
     );
 
-    erst = dma_alloc(sizeof(struct xhci_erst_entry), &erst_phys);
+    erst = xhci_dma_alloc_zero(sizeof(struct xhci_erst_entry), &erst_phys);
 
-    dcbaa = dma_alloc(256u * sizeof(uint64_t), &dcbaa_phys);
+    dcbaa = xhci_dma_alloc_zero(256u * sizeof(uint64_t), &dcbaa_phys);
 
     if (!command_ring || !event_ring || !erst || !dcbaa) {
         serial_write("[xHCI] Ring/DCBAA DMA allocation failed\n");
@@ -534,7 +556,7 @@ static bool xhci_allocate_rings(
     if (scratchpad_count != 0) {
         uint64_t scratchpad_array_phys = 0;
 
-        uint64_t *scratchpad_array = dma_alloc(
+        uint64_t *scratchpad_array = xhci_dma_alloc_zero(
             (size_t)scratchpad_count * sizeof(uint64_t),
             &scratchpad_array_phys
         );
@@ -547,7 +569,7 @@ static bool xhci_allocate_rings(
         for (uint32_t i = 0; i < scratchpad_count; i++) {
             uint64_t page_phys = 0;
 
-            if (!dma_alloc(4096, &page_phys)) {
+            if (!xhci_dma_alloc_zero(4096, &page_phys)) {
                 serial_write("[xHCI] Scratchpad page allocation failed\n");
                 return false;
             }
@@ -581,7 +603,7 @@ static bool xhci_allocate_rings(
     event_dequeue = 0;
     event_cycle = 1;
 
-    __asm__ volatile ("" ::: "memory");
+    __asm__ volatile ("mfence" ::: "memory");
 
     serial_write("[xHCI] Command ring physical: ");
     serial_write_hex(command_ring_phys);
@@ -626,14 +648,13 @@ static void xhci_configure_controller(
      */
     uint32_t intr = xhci_runtime + 0x20;
 
-    mmio_write32(xhci_mmio, intr + 0x04, 0); /* IMOD */
-    mmio_write32(xhci_mmio, intr + 0x08, 1); /* ERSTSZ */
-    /* ERSTBA: önce düşük 32 bit, sonra yüksek 32 bit. */
-    mmio_write32(xhci_mmio, intr + 0x10, (uint32_t)erst_phys);
-    mmio_write32(xhci_mmio, intr + 0x14, (uint32_t)(erst_phys >> 32));
-    mmio_write64(xhci_mmio, intr + 0x18, event_ring_phys);
+    /* [DEĞİŞTİ] ERSTBA yazımı event ring'i başlatır, bu yüzden EN SON yazılır. */
+    mmio_write32(xhci_mmio, intr + 0x04, 0);                 /* IMOD */
+    mmio_write32(xhci_mmio, intr + 0x08, 1);                 /* ERSTSZ */
+    mmio_write64(xhci_mmio, intr + 0x18, event_ring_phys);   /* ERDP */
+    mmio_write64(xhci_mmio, intr + 0x10, erst_phys);         /* ERSTBA */
 
-    __asm__ volatile ("" ::: "memory");
+    __asm__ volatile ("mfence" ::: "memory");
 
     serial_write("[xHCI] Command ring configured\n");
     serial_write("[xHCI] Event ring configured\n");
@@ -661,50 +682,49 @@ static bool xhci_submit_command(
     command_enqueue++;
 
     if (command_enqueue >= XHCI_TRBS_PER_RING - 1) {
-    command_enqueue = 0;
+        command_enqueue = 0;
 
-    command_ring[XHCI_TRBS_PER_RING - 1].control =
-        (XHCI_TRB_TYPE_LINK << 10) |
-        (1u << 1) |
-        command_cycle;
+        command_ring[XHCI_TRBS_PER_RING - 1].control =
+            (XHCI_TRB_TYPE_LINK << 10) |
+            (1u << 1) |
+            command_cycle;
 
-    __asm__ volatile ("mfence" ::: "memory");
+        __asm__ volatile ("mfence" ::: "memory");
 
-    command_cycle ^= 1;
-}
+        command_cycle ^= 1;
+    }
 
     serial_write("[xHCI] Submit command TRB: ");
     serial_write_hex(command_phys);
     serial_write("\n");
 
     /* Doorbell 0, Host Controller Command Ring. */
-    
     mmio_write32(xhci_mmio, xhci_doorbell, 0);
 
     struct xhci_trb event;
 
-if (!xhci_wait_queued_event(
-        XHCI_QUEUE_COMMAND,
-        &event,
-        10000000u)) {
-    serial_write("[xHCI] Command completion timed out\n");
-    return false;
-}
+    if (!xhci_wait_queued_event(
+            XHCI_QUEUE_COMMAND,
+            &event,
+            10000000u)) {
+        serial_write("[xHCI] Command completion timed out\n");
+        return false;
+    }
 
-uint32_t completion_code = event.status >> 24;
+    uint32_t completion_code = event.status >> 24;
 
-serial_write("[xHCI] Command completion code: ");
-serial_write_dec(completion_code);
-serial_write("\n");
+    serial_write("[xHCI] Command completion code: ");
+    serial_write_dec(completion_code);
+    serial_write("\n");
 
-if (completion_control != NULL)
-    *completion_control = event.control;
+    if (completion_control != NULL)
+        *completion_control = event.control;
 
-serial_write("[xHCI] Completed command pointer: ");
-serial_write_hex(event.parameter);
-serial_write("\n");
+    serial_write("[xHCI] Completed command pointer: ");
+    serial_write_hex(event.parameter);
+    serial_write("\n");
 
-return completion_code == 1u;
+    return completion_code == 1u;
 }
 
 static bool xhci_test_command_ring(void)
@@ -855,27 +875,27 @@ static bool xhci_prepare_and_address_device(
         return false;
     }
 
-xhci_active_slot = slot_id;
+    xhci_active_slot = slot_id;
     ep0_enqueue = 0;
     ep0_cycle = 1;
 
-    xhci_active_slot = slot_id;
     uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
 
     /* HCCPARAMS1.CSZ: 0 = 32-byte contexts, 1 = 64-byte contexts. */
     xhci_context_size = (hccparams1 & (1u << 2)) ? 64u : 32u;
 
-    device_context = dma_alloc(
+    /* [DEĞİŞTİ] dma_alloc -> xhci_dma_alloc_zero */
+    device_context = xhci_dma_alloc_zero(
         (size_t)xhci_context_size * 32u,
         &device_context_phys
     );
 
-    input_context = dma_alloc(
+    input_context = xhci_dma_alloc_zero(
         (size_t)xhci_context_size * 33u,
         &input_context_phys
     );
 
-    ep0_ring = dma_alloc(
+    ep0_ring = xhci_dma_alloc_zero(
         XHCI_TRBS_PER_RING * sizeof(struct xhci_trb),
         &ep0_ring_phys
     );
@@ -990,7 +1010,7 @@ xhci_active_slot = slot_id;
         return false;
     }
 
-uint32_t *slot_context = (uint32_t *)device_context;
+    uint32_t *slot_context = (uint32_t *)device_context;
 
     *out_slot_id = slot_id;
     *out_speed = (uint8_t)((slot_context[0] >> 20) & 0x0Fu);
@@ -1112,7 +1132,7 @@ bool xhci_control_transfer(
 )
 {
     if (slot_id == 0)
-    return false;
+        return false;
 
     xhci_active_slot = slot_id;
 
@@ -1221,7 +1241,6 @@ static void xhci_interrupt_in_push_trb(
     }
 }
 
-
 static bool xhci_interrupt_in_arm_transfer(void)
 {
     uint8_t slot_id = xhci_active_slot;
@@ -1270,10 +1289,10 @@ bool xhci_interrupt_in_configure(
     uint64_t buffer_phys
 )
 {
-if (slot_id == 0)
-    return false;
+    if (slot_id == 0)
+        return false;
 
-xhci_active_slot = slot_id;
+    xhci_active_slot = slot_id;
 
     uint8_t endpoint_number = endpoint_address & 0x0Fu;
 
@@ -1292,7 +1311,8 @@ xhci_active_slot = slot_id;
     interrupt_in_buffer = buffer;
     interrupt_in_buffer_phys = buffer_phys;
 
-    interrupt_in_ring = dma_alloc(
+    /* [DEĞİŞTİ] dma_alloc -> xhci_dma_alloc_zero */
+    interrupt_in_ring = xhci_dma_alloc_zero(
         XHCI_TRBS_PER_RING * sizeof(struct xhci_trb),
         &interrupt_in_ring_phys
     );
@@ -1484,6 +1504,99 @@ bool xhci_interrupt_in_read(
     return report_ready;
 }
 
+/* ------------------------------------------------------------------ */
+/* [YENİ] Port güç yardımcıları                                        */
+/* ------------------------------------------------------------------ */
+
+static void xhci_power_all_ports(uint32_t ports)
+{
+    uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
+
+    serial_write("[xHCI] PPC: ");
+    serial_write_dec((hccparams1 & XHCI_HCCPARAMS1_PPC) ? 1u : 0u);
+    serial_write("\n");
+
+    for (uint32_t p = 1; p <= ports; p++) {
+        uint32_t offset = xhci_op + 0x400u + (p - 1u) * 0x10u;
+        uint32_t portsc = mmio_read32(xhci_mmio, offset);
+
+        serial_write("[xHCI] Port ");
+        serial_write_dec(p);
+        serial_write(" PORTSC before: ");
+        serial_write_hex(portsc);
+        serial_write("\n");
+
+        if (portsc & XHCI_PORTSC_PP)
+            continue;
+
+        uint32_t value = portsc;
+        value &= ~(XHCI_PORTSC_PED |
+                   XHCI_PORTSC_PR |
+                   XHCI_PORTSC_WPR |
+                   XHCI_PORTSC_CHANGE_MASK |
+                   XHCI_PORTSC_LWS |
+                   (1u << 2) |
+                   (3u << 28));
+
+        /* PPC=0 raporlayan denetleyicilerde de güvenle denenir. */
+        mmio_write32(xhci_mmio, offset, value | XHCI_PORTSC_PP);
+
+        serial_write("[xHCI] Port ");
+        serial_write_dec(p);
+        serial_write(" PORTSC after: ");
+        serial_write_hex(mmio_read32(xhci_mmio, offset));
+        serial_write("\n");
+    }
+}
+
+static inline void xhci_io_delay(void)
+{
+    __asm__ volatile ("outb %%al, $0x80" : : "a"(0));
+}
+
+/* Kaba gecikme (port 0x80 yazımı ~1 us). Elinde PIT/HPET/TSC varsa onu kullan. */
+static void xhci_delay_ms(uint32_t ms)
+{
+    for (uint32_t i = 0; i < ms * 1000u; i++)
+        xhci_io_delay();
+}
+
+static bool xhci_any_connected(uint32_t ports)
+{
+    for (uint32_t i = 0; i < ports; i++) {
+        uint32_t offset = xhci_op + 0x400u + i * 0x10u;
+
+        if (mmio_read32(xhci_mmio, offset) & XHCI_PORTSC_CCS)
+            return true;
+    }
+
+    return false;
+}
+
+/* Güç verildikten sonra cihaz algılaması (debounce, USB3 link training) zaman alır. */
+static void xhci_wait_for_connection(uint32_t ports)
+{
+    serial_write("[xHCI] Waiting for port power-good / device detect\n");
+
+    for (uint32_t t = 0; t < 80u; t++) {          /* en fazla ~800 ms */
+        if (xhci_any_connected(ports)) {
+            xhci_delay_ms(100);                   /* diğer portlar da otursun */
+            break;
+        }
+        xhci_delay_ms(10);
+    }
+
+    for (uint32_t i = 0; i < ports; i++) {
+        uint32_t offset = xhci_op + 0x400u + i * 0x10u;
+
+        serial_write("[xHCI] Port ");
+        serial_write_dec(i + 1u);
+        serial_write(" PORTSC: ");
+        serial_write_hex(mmio_read32(xhci_mmio, offset));
+        serial_write("\n");
+    }
+}
+
 bool xhci_probe_all(
     uint64_t bar_phys,
     uint64_t hhdm_offset,
@@ -1520,18 +1633,15 @@ bool xhci_probe_all(
 
     uint32_t hcsparams1 = mmio_read32(xhci_mmio, 0x04);
     uint32_t hcsparams2 = mmio_read32(xhci_mmio, 0x08);
+    uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
 
-    
-uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
+    /* Firmware'den xHCI sahipliğini devralmayı dene. */
+    xhci_legacy_handoff(hccparams1);
 
-/* Firmware'den xHCI sahipliğini devralmayı dene. */
-xhci_legacy_handoff(hccparams1);
-
-xhci_read_supported_protocols(
-    hccparams1,
-    (hcsparams1 >> 24) & 0xFFu
-);
-
+    xhci_read_supported_protocols(
+        hccparams1,
+        (hcsparams1 >> 24) & 0xFFu
+    );
 
     uint32_t dboff = mmio_read32(xhci_mmio, 0x14) & ~0x3u;
     uint32_t rtsoff = mmio_read32(xhci_mmio, 0x18) & ~0x1Fu;
@@ -1548,29 +1658,27 @@ xhci_read_supported_protocols(
     serial_write_dec(hcsparams1 & 0xFFu);
     serial_write("\n");
 
+    /*
+     * USBSTS.CNR set ise denetleyici operasyonel
+     * kayıt yazmalarına henüz hazır değildir.
+     */
+    serial_write("[xHCI] Waiting for controller readiness\n");
+
+    if (!wait_register(
+            xhci_mmio,
+            xhci_op + 0x04,
+            USBSTS_NOT_READY,
+            0)) {
+        serial_write(
+            "[xHCI] ERROR: Controller not ready "
+            "before stop/reset\n"
+        );
+        return false;
+    }
+
+    serial_write("[xHCI] Controller ready for initialization\n");
+
     /* Stop the controller before resetting it. */
-
-    
-/*
- * USBSTS.CNR set ise denetleyici operasyonel
- * kayıt yazmalarına henüz hazır değildir.
- */
-serial_write("[xHCI] Waiting for controller readiness\n");
-
-if (!wait_register(
-        xhci_mmio,
-        xhci_op + 0x04,
-        USBSTS_NOT_READY,
-        0)) {
-    serial_write(
-        "[xHCI] ERROR: Controller not ready "
-        "before stop/reset\n"
-    );
-    return false;
-}
-
-serial_write("[xHCI] Controller ready for initialization\n");
-
     uint32_t cmd = mmio_read32(xhci_mmio, xhci_op);
     mmio_write32(
         xhci_mmio,
@@ -1612,6 +1720,11 @@ serial_write("[xHCI] Controller ready for initialization\n");
 
     serial_write("[xHCI] Reset complete\n");
 
+    uint32_t ports = (hcsparams1 >> 24) & 0xFFu;
+
+    /* [YENİ] HCRST port gücünü düşürebilir; ring testinden ÖNCE geri aç. */
+    xhci_power_all_ports(ports);
+
     if (!xhci_allocate_rings(hcsparams1, hcsparams2))
         return false;
 
@@ -1644,55 +1757,8 @@ serial_write("[xHCI] Controller ready for initialization\n");
         return false;
     }
 
-    uint32_t ports = (hcsparams1 >> 24) & 0xFFu;
-
-    
-/* Port güç anahtarı desteğini kontrol et. */
-bool port_power_control =
-    (hccparams1 & XHCI_HCCPARAMS1_PPC) != 0;
-
-serial_write("[xHCI] Port power control (PPC): ");
-serial_write(port_power_control ? "supported\n" : "not supported\n");
-
-/*
- * PPC destekleniyorsa, aygıt aramasından önce
- * bütün root-hub portlarının gücünü açmayı dene.
- */
-if (port_power_control) {
-    for (uint32_t p = 1; p <= ports; p++) {
-        uint32_t offset = xhci_op + 0x400u + (p - 1u) * 0x10u;
-        uint32_t portsc = mmio_read32(xhci_mmio, offset);
-
-        serial_write("[xHCI] Port ");
-        serial_write_dec(p);
-        serial_write(" PORTSC before power: ");
-        serial_write_hex(portsc);
-        serial_write("\n");
-
-        /*
-         * PORTSC'nin özel yazma kurallarına uy:
-         * değişiklik bitlerini ve reset/enable komutlarını
-         * yazma değerinde sıfır tut, PP bitini aç.
-         */
-        uint32_t value = portsc;
-        value &= ~(XHCI_PORTSC_PED |
-                   XHCI_PORTSC_PR |
-                   XHCI_PORTSC_WPR |
-                   XHCI_PORTSC_CHANGE_MASK |
-                   XHCI_PORTSC_LWS |
-                   (1u << 2) |
-                   (3u << 28));
-
-        mmio_write32(xhci_mmio, offset, value | XHCI_PORTSC_PP);
-
-        uint32_t after = mmio_read32(xhci_mmio, offset);
-        serial_write("[xHCI] Port ");
-        serial_write_dec(p);
-        serial_write(" PORTSC after power: ");
-        serial_write_hex(after);
-        serial_write("\n");
-    }
-}
+    /* [DEĞİŞTİ] Eski PPC bloğu kaldırıldı; güç zaten reset sonrası verildi. */
+    xhci_wait_for_connection(ports);
 
     uint32_t next_port_index = 0;
 
