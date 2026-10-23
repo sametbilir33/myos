@@ -16,6 +16,16 @@
 #define USBSTS_HALTED    (1u << 0)
 #define USBSTS_NOT_READY (1u << 11)
 
+#define XHCI_EXT_CAP_LEGACY       1u
+#define XHCI_LEGACY_BIOS_OWNED   (1u << 16)
+#define XHCI_LEGACY_OS_OWNED     (1u << 24)
+#define XHCI_LEGACY_CONTROL      0x04u
+
+#define XHCI_LEGACY_DISABLE_SMI \
+    ((0x7u << 1) | (0xFFu << 5) | (0x7u << 17))
+
+#define XHCI_LEGACY_SMI_EVENTS   (0x7u << 29)
+
 #define XHCI_PORTSC_CCS       (1u << 0)
 #define XHCI_PORTSC_PED       (1u << 1)
 #define XHCI_PORTSC_PR        (1u << 4)
@@ -289,6 +299,118 @@ static bool wait_register(
     }
 
     return false;
+}
+
+
+static void xhci_legacy_handoff(uint32_t hccparams1)
+{
+    uint32_t offset =
+        ((hccparams1 >> 16) & 0xFFFFu) * 4u;
+
+    if (offset == 0) {
+        serial_write(
+            "[xHCI] No extended capabilities\n"
+        );
+        return;
+    }
+
+    for (uint32_t n = 0; n < 256u; n++) {
+        if (offset < 0x20u || offset >= 0x10000u)
+            break;
+
+        uint32_t header = mmio_read32(xhci_mmio, offset);
+
+        if (header == 0 || header == 0xFFFFFFFFu)
+            break;
+
+        uint32_t cap_id = header & 0xFFu;
+        uint32_t next = (header >> 8) & 0xFFu;
+
+        if (cap_id == XHCI_EXT_CAP_LEGACY) {
+            uint32_t legacy =
+                mmio_read32(xhci_mmio, offset);
+
+            serial_write(
+                "[xHCI] USB Legacy Support found: "
+            );
+            serial_write_hex(legacy);
+            serial_write("\n");
+
+            if (legacy & XHCI_LEGACY_BIOS_OWNED) {
+                serial_write(
+                    "[xHCI] Requesting OS ownership\n"
+                );
+
+                mmio_write32(
+                    xhci_mmio,
+                    offset,
+                    legacy | XHCI_LEGACY_OS_OWNED
+                );
+
+                bool released = false;
+
+                for (uint32_t i = 0;
+                     i < 10000000u;
+                     i++) {
+                    uint32_t value =
+                        mmio_read32(xhci_mmio, offset);
+
+                    if (!(value & XHCI_LEGACY_BIOS_OWNED)) {
+                        released = true;
+                        break;
+                    }
+                }
+
+                if (released) {
+                    serial_write(
+                        "[xHCI] BIOS ownership released\n"
+                    );
+                } else {
+                    serial_write(
+                        "[xHCI] WARNING: BIOS handoff "
+                        "timed out\n"
+                    );
+                }
+            } else {
+                serial_write(
+                    "[xHCI] BIOS ownership not set\n"
+                );
+            }
+
+            /*
+             * Linux'taki gibi firmware kaynaklı SMI
+             * olaylarını ve etkin SMI kaynaklarını kapat.
+             */
+            uint32_t control = mmio_read32(
+                xhci_mmio,
+                offset + XHCI_LEGACY_CONTROL
+            );
+
+            control &= XHCI_LEGACY_DISABLE_SMI;
+            control |= XHCI_LEGACY_SMI_EVENTS;
+
+            mmio_write32(
+                xhci_mmio,
+                offset + XHCI_LEGACY_CONTROL,
+                control
+            );
+
+            serial_write(
+                "[xHCI] Legacy SMI handling disabled\n"
+            );
+
+            return;
+        }
+
+        if (next == 0)
+            break;
+
+        offset += next * 4u;
+    }
+
+    serial_write(
+        "[xHCI] No USB Legacy Support capability\n"
+    );
 }
 
 static void xhci_read_supported_protocols(
@@ -1399,12 +1521,17 @@ bool xhci_probe_all(
     uint32_t hcsparams1 = mmio_read32(xhci_mmio, 0x04);
     uint32_t hcsparams2 = mmio_read32(xhci_mmio, 0x08);
 
-    uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
+    
+uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
 
-    xhci_read_supported_protocols(
-        hccparams1,
-        (hcsparams1 >> 24) & 0xFFu
-    );
+/* Firmware'den xHCI sahipliğini devralmayı dene. */
+xhci_legacy_handoff(hccparams1);
+
+xhci_read_supported_protocols(
+    hccparams1,
+    (hcsparams1 >> 24) & 0xFFu
+);
+
 
     uint32_t dboff = mmio_read32(xhci_mmio, 0x14) & ~0x3u;
     uint32_t rtsoff = mmio_read32(xhci_mmio, 0x18) & ~0x1Fu;
@@ -1422,6 +1549,28 @@ bool xhci_probe_all(
     serial_write("\n");
 
     /* Stop the controller before resetting it. */
+
+    
+/*
+ * USBSTS.CNR set ise denetleyici operasyonel
+ * kayıt yazmalarına henüz hazır değildir.
+ */
+serial_write("[xHCI] Waiting for controller readiness\n");
+
+if (!wait_register(
+        xhci_mmio,
+        xhci_op + 0x04,
+        USBSTS_NOT_READY,
+        0)) {
+    serial_write(
+        "[xHCI] ERROR: Controller not ready "
+        "before stop/reset\n"
+    );
+    return false;
+}
+
+serial_write("[xHCI] Controller ready for initialization\n");
+
     uint32_t cmd = mmio_read32(xhci_mmio, xhci_op);
     mmio_write32(
         xhci_mmio,
