@@ -297,13 +297,11 @@ bool usb_hid_mouse_read_packet(
 )
 {
     if (slot_id == 0 ||
-        slot_id >= USB_HID_MOUSE_MAX_DEVICES ||
-        dx == NULL ||
-        dy == NULL ||
-        buttons == NULL) {
-        return false;
-    }
-
+    dx == NULL ||
+    dy == NULL ||
+    buttons == NULL) {
+    return false;
+}
     struct usb_hid_mouse *mouse = &usb_mice[slot_id];
 
     if (!mouse->active)

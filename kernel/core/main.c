@@ -812,7 +812,7 @@ void kernel_main(void)
 
     uint64_t boot_wait_start = interrupts_ticks();
 
-    while (interrupts_ticks() - boot_wait_start < 300)
+    while (interrupts_ticks() - boot_wait_start < 100)
     {
         __asm__ volatile("hlt" ::: "memory");
     }

@@ -20,6 +20,7 @@
 #define XHCI_PORTSC_PED       (1u << 1)
 #define XHCI_PORTSC_PR        (1u << 4)
 #define XHCI_PORTSC_PP        (1u << 9)
+#define XHCI_HCCPARAMS1_PPC   (1u << 3)
 #define XHCI_PORTSC_SPEED     (0xFu << 10)
 
 #define XHCI_PORTSC_CSC       (1u << 17)
@@ -1495,6 +1496,55 @@ bool xhci_probe_all(
     }
 
     uint32_t ports = (hcsparams1 >> 24) & 0xFFu;
+
+    
+/* Port güç anahtarı desteğini kontrol et. */
+bool port_power_control =
+    (hccparams1 & XHCI_HCCPARAMS1_PPC) != 0;
+
+serial_write("[xHCI] Port power control (PPC): ");
+serial_write(port_power_control ? "supported\n" : "not supported\n");
+
+/*
+ * PPC destekleniyorsa, aygıt aramasından önce
+ * bütün root-hub portlarının gücünü açmayı dene.
+ */
+if (port_power_control) {
+    for (uint32_t p = 1; p <= ports; p++) {
+        uint32_t offset = xhci_op + 0x400u + (p - 1u) * 0x10u;
+        uint32_t portsc = mmio_read32(xhci_mmio, offset);
+
+        serial_write("[xHCI] Port ");
+        serial_write_dec(p);
+        serial_write(" PORTSC before power: ");
+        serial_write_hex(portsc);
+        serial_write("\n");
+
+        /*
+         * PORTSC'nin özel yazma kurallarına uy:
+         * değişiklik bitlerini ve reset/enable komutlarını
+         * yazma değerinde sıfır tut, PP bitini aç.
+         */
+        uint32_t value = portsc;
+        value &= ~(XHCI_PORTSC_PED |
+                   XHCI_PORTSC_PR |
+                   XHCI_PORTSC_WPR |
+                   XHCI_PORTSC_CHANGE_MASK |
+                   XHCI_PORTSC_LWS |
+                   (1u << 2) |
+                   (3u << 28));
+
+        mmio_write32(xhci_mmio, offset, value | XHCI_PORTSC_PP);
+
+        uint32_t after = mmio_read32(xhci_mmio, offset);
+        serial_write("[xHCI] Port ");
+        serial_write_dec(p);
+        serial_write(" PORTSC after power: ");
+        serial_write_hex(after);
+        serial_write("\n");
+    }
+}
+
     uint32_t next_port_index = 0;
 
     while (next_port_index < ports && *out_count < capacity) {
