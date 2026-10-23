@@ -45,6 +45,8 @@
 #define XHCI_PORTSC_WPR       (1u << 31)
 #define XHCI_PORTSC_LWS       (1u << 16)
 
+#define XHCI_HCCPARAMS1_PPC (1u << 3)
+
 struct xhci_trb {
     uint64_t parameter;
     uint32_t status;
@@ -1511,24 +1513,42 @@ bool xhci_interrupt_in_read(
 static void xhci_power_all_ports(uint32_t ports)
 {
     uint32_t hccparams1 = mmio_read32(xhci_mmio, 0x10);
+    bool ppc = (hccparams1 & XHCI_HCCPARAMS1_PPC) != 0;
 
-    serial_write("[xHCI] PPC: ");
-    serial_write_dec((hccparams1 & XHCI_HCCPARAMS1_PPC) ? 1u : 0u);
+    serial_write("\n[xHCI] HCCPARAMS1=");
+    serial_write_hex(hccparams1);
+    serial_write(" PPC=");
+    serial_write_dec(ppc ? 1u : 0u);
     serial_write("\n");
 
-    for (uint32_t p = 1; p <= ports; p++) {
-        uint32_t offset = xhci_op + 0x400u + (p - 1u) * 0x10u;
+    for (uint32_t p = 1; p <= ports; ++p) {
+        uint32_t offset =
+            xhci_op + 0x400u + (p - 1u) * 0x10u;
+
         uint32_t portsc = mmio_read32(xhci_mmio, offset);
 
         serial_write("[xHCI] Port ");
         serial_write_dec(p);
-        serial_write(" PORTSC before: ");
+        serial_write(" PORTSC before=");
         serial_write_hex(portsc);
         serial_write("\n");
 
-        if (portsc & XHCI_PORTSC_PP)
+        /*
+         * PPC=0 ise PP, yazilimla kontrol edilebilir
+         * bir port-guc anahtari degildir.
+         */
+        if (!ppc) {
             continue;
+        }
 
+        if (portsc & XHCI_PORTSC_PP) {
+            continue;
+        }
+
+        /*
+         * PORTSC'deki W1C durum degisiklik bitlerine
+         * 1 yazma; reset/enable isteklerini de tetikleme.
+         */
         uint32_t value = portsc;
         value &= ~(XHCI_PORTSC_PED |
                    XHCI_PORTSC_PR |
@@ -1536,16 +1556,25 @@ static void xhci_power_all_ports(uint32_t ports)
                    XHCI_PORTSC_CHANGE_MASK |
                    XHCI_PORTSC_LWS |
                    (1u << 2) |
-                   (3u << 28));
+                   (0xFu << 28));
 
-        /* PPC=0 raporlayan denetleyicilerde de güvenle denenir. */
-        mmio_write32(xhci_mmio, offset, value | XHCI_PORTSC_PP);
+        mmio_write32(xhci_mmio, offset,
+                     value | XHCI_PORTSC_PP);
+
+        /* Register yaziminin denetleyiciye ulasmasini oku. */
+        uint32_t after = mmio_read32(xhci_mmio, offset);
 
         serial_write("[xHCI] Port ");
         serial_write_dec(p);
-        serial_write(" PORTSC after: ");
-        serial_write_hex(mmio_read32(xhci_mmio, offset));
+        serial_write(" PORTSC after=");
+        serial_write_hex(after);
         serial_write("\n");
+    }
+
+    if (!ppc) {
+        serial_write(
+            "[xHCI] PPC=0; port power switch is not software-controllable\n"
+        );
     }
 }
 
