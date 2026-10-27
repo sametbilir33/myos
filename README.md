@@ -32,8 +32,6 @@ The project is an experiment in low-level programming, graphics, USB hardware su
 - Experimental USB HID Boot Mouse support
 - Interrupt-IN mouse transfers handled by the desktop loop
 
-The current input path uses a **USB mouse**. PS/2 mouse support has been removed.
-
 ## 🧪 Current Status
 
 MyOS can boot into a basic graphical desktop and receive mouse input through its experimental xHCI/HID implementation.
@@ -52,15 +50,38 @@ Expect bugs, missing features, rough edges, and the occasional "why did that hap
 - Ninja
 - NASM
 - QEMU
-- AI-assisted development
 
 ## 🚀 Building
 
-The current development environment uses **MSYS2 UCRT64** on Windows.
+### Prerequisites
 
-Make sure Clang, LLD, CMake, Ninja, NASM, QEMU, xorriso, and the required Limine files are installed and available in your environment.
+MyOS is developed and built in a Linux environment. The following tools are required:
 
-From the repository root, configure and build:
+- Clang
+- LLD
+- CMake
+- Ninja
+- NASM
+- QEMU x86_64
+- xorriso
+- Python 3
+- Limine bootloader files required by the project
+
+On Arch Linux, install the main build tools with:
+
+```bash
+sudo pacman -Syu --needed \
+  base-devel git cmake ninja pkgconf \
+  clang llvm lld nasm \
+  qemu-system-x86 xorriso python \
+  limine mtools dosfstools
+```
+
+The exact Limine files and version required depend on the boot configuration included in the repository.
+
+### Build
+
+Run these commands from the repository root:
 
 ```bash
 rm -rf build/
@@ -68,13 +89,25 @@ cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-x86_64.cmake
 cmake --build build
 ```
 
-If the build completes successfully and produces `build/myos.iso`, launch it in QEMU with an xHCI controller and a virtual USB mouse:
+After a successful build, the ISO should be available at `build/myos.iso`.
+
+### Run in QEMU
+
+Launch MyOS with a virtual xHCI controller and USB mouse:
 
 ```bash
-qemu-system-x86_64 -machine q35 -m 256M -no-reboot -no-shutdown -serial stdio -device qemu-xhci,id=xhci -device usb-mouse,bus=xhci.0 -cdrom build/myos.iso
+qemu-system-x86_64 \
+  -machine q35 \
+  -m 256M \
+  -no-reboot \
+  -no-shutdown \
+  -serial stdio \
+  -device qemu-xhci,id=xhci \
+  -device usb-mouse,bus=xhci.0 \
+  -cdrom build/myos.iso
 ```
 
-The virtual xHCI controller and USB mouse are important: launching QEMU without them does not provide the USB mouse hardware expected by the current input implementation.
+The virtual xHCI controller and USB mouse are important because the current input implementation expects USB mouse hardware.
 
 Build and runtime instructions may change as the project evolves.
 

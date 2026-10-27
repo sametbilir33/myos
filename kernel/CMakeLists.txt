@@ -1,14 +1,14 @@
 find_program(XORRISO_EXECUTABLE xorriso REQUIRED)
-find_program(CYGPATH_EXECUTABLE cygpath REQUIRED)
 
 set(LIMINE_DIR "${CMAKE_SOURCE_DIR}/boot/limine")
 set(LIMINE_CONFIG "${CMAKE_SOURCE_DIR}/boot/limine.conf")
-set(LIMINE_INSTALLER
-    "${LIMINE_DIR}/limine-tool-windows-x86/limine.exe"
-)
+set(LIMINE_INSTALLER "${LIMINE_DIR}/limine")
 
 if(NOT EXISTS "${LIMINE_INSTALLER}")
-    message(FATAL_ERROR "Limine Windows installer not found: ${LIMINE_INSTALLER}")
+    message(FATAL_ERROR
+        "Limine installer not found: ${LIMINE_INSTALLER}\n"
+        "Run: make -C boot/limine"
+    )
 endif()
 
 # Automatically discover all kernel C source files.
@@ -59,23 +59,8 @@ add_custom_target(kernel DEPENDS "${KERNEL_ELF}")
 set(ISO_ROOT "${CMAKE_BINARY_DIR}/iso_root")
 set(ISO_FILE "${CMAKE_BINARY_DIR}/myos.iso")
 
-execute_process(
-    COMMAND "${CYGPATH_EXECUTABLE}" -u "${ISO_ROOT}"
-    OUTPUT_VARIABLE ISO_ROOT_POSIX
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    COMMAND_ERROR_IS_FATAL ANY
-)
-
-execute_process(
-    COMMAND "${CYGPATH_EXECUTABLE}" -u "${ISO_FILE}"
-    OUTPUT_VARIABLE ISO_FILE_POSIX
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    COMMAND_ERROR_IS_FATAL ANY
-)
-
 add_custom_target(iso ALL
     COMMAND "${CMAKE_COMMAND}" -E rm -f "${ISO_FILE}"
-
     COMMAND "${CMAKE_COMMAND}" -E rm -rf "${ISO_ROOT}"
 
     COMMAND "${CMAKE_COMMAND}" -E make_directory
@@ -113,8 +98,8 @@ add_custom_target(iso ALL
         -efi-boot-part
         --efi-boot-image
         --protective-msdos-label
-        "${ISO_ROOT_POSIX}"
-        -o "${ISO_FILE_POSIX}"
+        "${ISO_ROOT}"
+        -o "${ISO_FILE}"
 
     COMMAND "${LIMINE_INSTALLER}"
         bios-install "${ISO_FILE}"
